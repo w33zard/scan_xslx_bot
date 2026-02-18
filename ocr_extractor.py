@@ -35,27 +35,45 @@ def preprocess_image(image_path: str) -> "cv2.Mat":
         return None
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # Увеличение контраста
+    # Увеличение контраста без бинаризации (OTSU может затереть текст)
     gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
-    # Бинаризация
-    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    # Масштабирование для лучшего распознавания мелкого текста
+    # Масштабирование для мелкого текста
     scale = 2
-    thresh = cv2.resize(thresh, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-    return thresh
+    gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    return gray
 
 
 def extract_text_from_image(image_path: str) -> str:
     """Извлечь текст из изображения паспорта"""
     try:
-        img_processed = preprocess_image(image_path)
-        if img_processed is None:
+        img = cv2.imread(image_path)
+        if img is None:
             return ""
 
-        # OCR с русским и английским языками
-        config = "--psm 6 -c tessedit_char_whitelist=0123456789АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюяABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz .,/-"
-        text = pytesseract.image_to_string(img_processed, lang="rus+eng", config=config)
-        return text
+        # Варианты: предобработка и исходник (иногда лучше работает)
+        variants = [preprocess_image(image_path), cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)]
+
+        for lang in ["rus+eng", "rus", "eng"]:
+            for img_use in variants:
+                if img_use is None:
+                    continue
+                for psm in [6, 3]:
+                    try:
+                        config = f"--psm {psm} -c preserve_interword_spaces=1"
+                        text = pytesseract.image_to_string(img_use, lang=lang, config=config)
+                        if text and len(text.strip()) > 20:
+                            return text
+                    except Exception:
+                        continue
+        last_img = next((v for v in variants if v is not None), cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
+        for lang in ["rus+eng", "rus"]:
+            try:
+                t = pytesseract.image_to_string(last_img, lang=lang, config="--psm 6")
+                if t:
+                    return t
+            except Exception:
+                continue
+        return ""
     except Exception as e:
         print(f"OCR error for {image_path}: {e}")
         return ""
@@ -132,12 +150,10 @@ def parse_passport_data(ocr_text: str) -> dict:
         data["Имя"] = fio_match.group(2)
         data["Отчество"] = fio_match.group(3)
 
-    # ИНН
-    inn_match = re.search(r"\b(\d{10}|\d{12})\b", full_text)
+    # ИНН — только 12 цифр (физлицо), не путать с серией паспорта (10 цифр)
+    inn_match = re.search(r"\b(\d{12})\b", full_text)
     if inn_match:
-        val = inn_match.group(1)
-        if len(val) in (10, 12):
-            data["ИНН"] = val
+        data["ИНН"] = inn_match.group(1)
 
     # Кем выдан - ищем после "выдан" или код подразделения
     issued_match = re.search(
