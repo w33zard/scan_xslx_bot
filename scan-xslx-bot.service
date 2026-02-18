@@ -5,9 +5,9 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/scan_xslx_bot
-EnvironmentFile=/root/scan_xslx_bot/.env
-ExecStart=/root/scan_xslx_bot/venv/bin/python /root/scan_xslx_bot/bot.py
+WorkingDirectory=/opt/scan_xslx_bot
+EnvironmentFile=/opt/scan_xslx_bot/.env
+ExecStart=/opt/scan_xslx_bot/venv/bin/python /opt/scan_xslx_bot/bot.py
 Restart=always
 RestartSec=5
 

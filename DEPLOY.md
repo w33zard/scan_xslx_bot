@@ -15,8 +15,8 @@ ssh root@194.67.88.36
 
 # Вариант A: вручную
 apt-get update && apt-get install -y docker.io docker-compose-v2 git
-mkdir -p /root/scan_xslx_bot
-cd /root/scan_xslx_bot
+mkdir -p /opt/scan_xslx_bot
+cd /opt/scan_xslx_bot
 git clone https://github.com/YOUR_USERNAME/scan_xslx_bot.git .
 cp .env.example .env
 nano .env   # вписать TELEGRAM_BOT_TOKEN
@@ -66,7 +66,7 @@ git push -u origin main
 
 ```bash
 ssh root@194.67.88.36
-cd /root/scan_xslx_bot
+cd /opt/scan_xslx_bot
 docker compose ps
 docker compose logs -f bot
 ```

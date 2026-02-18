@@ -15,7 +15,6 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd /root/scan_xslx_bot
+            cd /opt/scan_xslx_bot
             git pull
-            docker compose pull --quiet 2>/dev/null || true
-            docker compose up -d --build
+            sudo systemctl restart scan-xslx-bot
