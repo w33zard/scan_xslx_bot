@@ -1,0 +1,9 @@
+services:
+  bot:
+    build: .
+    container_name: scan_xslx_bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TEMPLATE_EXCEL=${TEMPLATE_EXCEL:-}
