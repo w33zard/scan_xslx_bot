@@ -6,4 +6,5 @@ services:
     env_file: .env
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - ADMIN_IDS=${ADMIN_IDS:-1847615831}
       - TEMPLATE_EXCEL=${TEMPLATE_EXCEL:-}

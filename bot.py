@@ -15,20 +15,35 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from excel_export import create_excel
 from ocr_extractor import process_passport_image, process_images_from_folder
 
+ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_IDS", "1847615831").split(",") if x.strip()]
 
+
+def admin_only(func):
+    """Доступ только для админов"""
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id if update.effective_user else None
+        if ADMIN_IDS and user_id not in ADMIN_IDS:
+            await update.message.reply_text("⛔ Доступ запрещён.")
+            return
+        return await func(update, context)
+    return wrapper
+
+
+@admin_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Приветственное сообщение"""
     await update.message.reply_text(
         "👋 Привет! Я бот для извлечения данных из сканов паспортов.\n\n"
         "📤 Отправьте мне:\n"
         "• ZIP-архив с изображениями паспортов (.jpg, .png и т.д.)\n"
-        "• Или несколько фото/документов паспортов подряд\n\n"
+        "• Или несколько фото паспортов, затем /ready\n\n"
         "📊 Я обработаю сканы через OCR и верну Excel-файл с данными:\n"
         "ФИО, дата рождения, место рождения, серия и номер, дата выдачи, кем выдан, ИНН, адрес.\n\n"
         "⚠️ Требования: чёткие фото, хорошее освещение. Поддержка русского языка."
     )
 
 
+@admin_only
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка ZIP-архива"""
     document = update.message.document
@@ -83,6 +98,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
+@admin_only
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка фото — сохраняем в контекст и ждём /готово или следующее фото"""
     if "pending_photos" not in context.user_data:
@@ -96,16 +112,17 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     count = len(context.user_data["pending_photos"])
     await update.message.reply_text(
-        f"📷 Получено фото: {count}. Отправьте ещё или введите /готово для обработки."
+        f"📷 Получено фото: {count}. Отправьте ещё или введите /ready для обработки."
     )
 
 
+@admin_only
 async def process_ready(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка накопленных фото по команде /готово"""
     photos = context.user_data.get("pending_photos", [])
     if not photos:
         await update.message.reply_text(
-            "📷 Сначала отправьте фото паспортов, затем /готово"
+            "📷 Сначала отправьте фото паспортов, затем /ready"
         )
         return
 
@@ -147,7 +164,7 @@ def main() -> None:
     app = Application.builder().token(token).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("готово", process_ready))
+    app.add_handler(CommandHandler("ready", process_ready))
     app.add_handler(
         MessageHandler(filters.Document.ALL, handle_document)
     )

@@ -5,3 +5,5 @@ __pycache__
 *.pyc
 *.pyo
 config.py
+deploy_key
+deploy_key.pub
