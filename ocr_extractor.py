@@ -35,13 +35,38 @@ def preprocess_image(image_path: str) -> "cv2.Mat":
         return None
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # Увеличение контраста без бинаризации (OTSU может затереть текст)
+    # Обрезка краёв — убираем рамки/водяные знаки, оставляем центральную часть
+    h, w = gray.shape
+    margin = min(h, w) // 15
+    gray = gray[margin : h - margin, margin : w - margin]
+    # Лёгкое шумоподавление (сильное размывает текст)
+    gray = cv2.fastNlMeansDenoising(gray, None, 5, 7, 21)
     gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
     # Масштабирование для мелкого текста
     scale = 2
     gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     return gray
 
+
+def _crop_center(img, frac=0.85):
+    """Обрезать по центру, убрать края"""
+    h, w = img.shape[:2]
+    nh, nw = int(h * frac), int(w * frac)
+    y0, x0 = (h - nh) // 2, (w - nw) // 2
+    return img[y0 : y0 + nh, x0 : x0 + nw]
+
+
+def _is_garbage(text: str) -> bool:
+    """Проверка: текст выглядит как мусор (в основном спецсимволы)"""
+    if not text or len(text.strip()) < 10:
+        return True
+    letters = sum(1 for c in text if c.isalpha() or c in "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя")
+    digits = sum(1 for c in text if c.isdigit())
+    total = len([c for c in text if not c.isspace()])
+    if total == 0:
+        return True
+    useful = (letters + digits) / total
+    return useful < 0.25  # больше 75% мусора — отбрасываем
 
 def extract_text_from_image(image_path: str) -> str:
     """Извлечь текст из изображения паспорта"""
@@ -50,29 +75,42 @@ def extract_text_from_image(image_path: str) -> str:
         if img is None:
             return ""
 
-        # Варианты: предобработка и исходник (иногда лучше работает)
-        variants = [preprocess_image(image_path), cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)]
+        gray_full = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        gray_crop = _crop_center(gray_full)
+        preprocessed = preprocess_image(image_path)
+        variants = [
+            (preprocessed, "preprocessed"),
+            (gray_crop, "cropped"),
+            (gray_full, "full"),
+        ]
 
-        for lang in ["rus+eng", "rus", "eng"]:
-            for img_use in variants:
-                if img_use is None:
-                    continue
-                for psm in [6, 3]:
+        for img_use, _ in variants:
+            if img_use is None:
+                continue
+            for psm in [11, 6, 4, 3]:  # 11=sparse text, лучше для паспортов
+                for lang in ["rus+eng", "rus"]:
                     try:
                         config = f"--psm {psm} -c preserve_interword_spaces=1"
                         text = pytesseract.image_to_string(img_use, lang=lang, config=config)
-                        if text and len(text.strip()) > 20:
-                            return text
+                        if text and not _is_garbage(text):
+                            return text.strip()
                     except Exception:
                         continue
-        last_img = next((v for v in variants if v is not None), cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
-        for lang in ["rus+eng", "rus"]:
-            try:
-                t = pytesseract.image_to_string(last_img, lang=lang, config="--psm 6")
-                if t:
-                    return t
-            except Exception:
-                continue
+
+        # Попытка через image_to_data — только слова с высокой уверенностью
+        last_img = preprocessed if preprocessed is not None else gray_crop
+        try:
+            d = pytesseract.image_to_data(last_img, lang="rus+eng", output_type=pytesseract.Output.DICT)
+            confs = d.get("conf", [])
+            words = [
+                str(d["text"][i]).strip() for i in range(len(d["text"]))
+                if i < len(confs) and int(confs[i]) > 60 and str(d["text"][i]).strip()
+            ]
+            text = " ".join(words).strip() if words else ""
+            if text and not _is_garbage(text):
+                return text
+        except Exception:
+            pass
         return ""
     except Exception as e:
         print(f"OCR error for {image_path}: {e}")
@@ -128,21 +166,28 @@ def parse_passport_data(ocr_text: str) -> dict:
 
     full_text = ocr_text
 
-    # Серия и номер - особый случай, ищем первое совпадение формата ХХ ХХ ХХХХХХ
-    series_match = re.search(r"(\d{2})\s*(\d{2})\s*(\d{6})", full_text)
-    if series_match:
+    # Серия и номер — ХХ ХХ ХХХХХХ или ХХХХ ХХХХХХ
+    series_match = re.search(r"\b(\d{2})\s*(\d{2})\s*(\d{6})\b", full_text)
+    if not series_match:
+        series_match = re.search(r"\b(\d{4})\s*(\d{6})\b", full_text)
+        if series_match:
+            data["Серия и номер паспорта"] = f"{series_match.group(1)[:2]} {series_match.group(1)[2:]} {series_match.group(2)}"
+    else:
         data["Серия и номер паспорта"] = f"{series_match.group(1)} {series_match.group(2)} {series_match.group(3)}"
 
-    # Дата рождения - DD.MM.YYYY
-    dob_matches = re.findall(r"\b(\d{2}\.\d{2}\.\d{4})\b", full_text)
-    if dob_matches:
-        data["Дата рождения"] = dob_matches[0]
-        if len(dob_matches) > 1:
-            data["Дата выдачи"] = dob_matches[1]
+    # Код подразделения XXX-XXX — можно добавить к "Кем выдан"
+    code_match = re.search(r"\b(\d{3}-\d{3})\b", full_text)
+    subdiv_code = code_match.group(1) if code_match else ""
 
-    # ФИО - обычно в начале, три слова подряд с заглавной буквы
+    dob_matches = re.findall(r"\b(\d{2}[.\-]\d{2}[.\-]\d{4})\b", full_text)
+    if dob_matches:
+        data["Дата рождения"] = dob_matches[0].replace("-", ".")
+        if len(dob_matches) > 1:
+            data["Дата выдачи"] = dob_matches[1].replace("-", ".")
+
+    # ФИО — три слова кириллицей (российский паспорт)
     fio_match = re.search(
-        r"([А-ЯЁ][а-яё]+)\s+([А-ЯЁ][а-яё]+)\s+([А-ЯЁ][а-яё]+)",
+        r"([А-ЯЁ][а-яё]{2,})\s+([А-ЯЁ][а-яё]{2,})\s+([А-ЯЁ][а-яё]{2,})",
         full_text,
     )
     if fio_match:
@@ -163,6 +208,8 @@ def parse_passport_data(ocr_text: str) -> dict:
     )
     if issued_match:
         data["Кем выдан"] = issued_match.group(1).strip()[:200]
+    elif subdiv_code:
+        data["Кем выдан"] = subdiv_code
 
     # Место рождения
     birth_place_match = re.search(
@@ -192,6 +239,9 @@ def process_passport_image(image_path: str, index: int = 1) -> dict:
     ocr_text = extract_text_from_image(image_path)
     data = parse_passport_data(ocr_text)
     data_with_num = {"№ п/п": str(index), **data}
+    # Если парсинг пустой, но OCR вернул осмысленный текст — кладём в Примечания
+    if ocr_text and not any(data.values()) and not _is_garbage(ocr_text):
+        data_with_num["Примечания"] = ocr_text.strip()[:500].replace("\n", " ")
     return data_with_num
 
 
