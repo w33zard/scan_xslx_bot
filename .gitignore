@@ -7,3 +7,6 @@ __pycache__
 config.py
 deploy_key
 deploy_key.pub
+123.zip
+test_extract/
+test_ocr.py

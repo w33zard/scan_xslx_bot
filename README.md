@@ -16,17 +16,15 @@
 pip install -r requirements.txt
 ```
 
-### 3. Токен бота
+### 3. Токен бота и Yandex Vision (рекомендуется)
 
 1. Создайте бота в [@BotFather](https://t.me/BotFather)
-2. Скопируйте токен и задайте переменную окружения:
-
-```powershell
-$env:TELEGRAM_BOT_TOKEN = "ваш_токен"
-
-# Опционально: эталонный Excel для формата колонок (как в пас.xlsx)
-$env:TEMPLATE_EXCEL = "C:\Users\alexa\Downloads\пас.xlsx"
-```
+2. Для **полного распознавания** паспортов добавьте Yandex Vision API:
+   - [Yandex Cloud Console](https://console.cloud.yandex.ru/) → Vision → API-ключ
+   - Бесплатно: 1000 запросов/мес
+3. В `.env` укажите:
+   - `TELEGRAM_BOT_TOKEN` — токен от BotFather
+   - `YANDEX_VISION_API_KEY` — ключ Yandex Vision (для полного распознавания паспортов)
 
 ## Запуск
 

@@ -1,14 +1,15 @@
 """
 Извлечение данных из сканов паспортов с помощью OCR
+Поддержка: Yandex Vision API (приоритет) и Tesseract (fallback)
 """
+import base64
+import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Optional
 
 import cv2
 import pytesseract
-from PIL import Image
 
 
 # Колонки для Excel (как в целевом формате)
@@ -56,6 +57,49 @@ def _crop_center(img, frac=0.85):
     return img[y0 : y0 + nh, x0 : x0 + nw]
 
 
+def _yandex_vision_ocr(image_path: str) -> str:
+    """OCR через Yandex Vision API — лучше для российских паспортов"""
+    api_key = os.environ.get("YANDEX_VISION_API_KEY")
+    if not api_key:
+        return ""
+
+    try:
+        import requests
+        with open(image_path, "rb") as f:
+            content = base64.b64encode(f.read()).decode("utf-8")
+
+        url = "https://vision.api.cloud.yandex.net/vision/v1/batchAnalyze"
+        headers = {"Authorization": f"Api-Key {api_key}", "Content-Type": "application/json"}
+        body = {
+            "analyze_specs": [{
+                "content": content,
+                "features": [{
+                    "type": "TEXT_DETECTION",
+                    "text_detection_config": {"language_codes": ["ru", "en"]}
+                }]
+            }]
+        }
+        r = requests.post(url, json=body, headers=headers, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+
+        texts = []
+        for res in data.get("results", []):
+            for item in res.get("results", []):
+                ann = item.get("textAnnotation", {})
+                if ann.get("fullText"):
+                    texts.append(ann["fullText"])
+                for block in ann.get("blocks", []):
+                    for line in block.get("lines", []):
+                        line_text = " ".join(w.get("text", "") for w in line.get("words", []))
+                        if line_text:
+                            texts.append(line_text)
+        return "\n".join(texts) if texts else ""
+    except Exception as e:
+        print(f"Yandex Vision error: {e}")
+        return ""
+
+
 def _is_garbage(text: str) -> bool:
     """Проверка: текст выглядит как мусор (в основном спецсимволы)"""
     if not text or len(text.strip()) < 10:
@@ -71,6 +115,11 @@ def _is_garbage(text: str) -> bool:
 def extract_text_from_image(image_path: str) -> str:
     """Извлечь текст из изображения паспорта"""
     try:
+        # Сначала Yandex Vision, если есть ключ
+        text = _yandex_vision_ocr(image_path)
+        if text and not _is_garbage(text):
+            return text.strip()
+
         img = cv2.imread(image_path)
         if img is None:
             return ""
