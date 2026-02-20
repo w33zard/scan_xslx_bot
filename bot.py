@@ -64,11 +64,28 @@ async def cmd_diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # 3. Создаём тестовое изображение и запускаем OCR
     try:
         from PIL import Image, ImageDraw, ImageFont
-        img = Image.new("RGB", (600, 200), "white")
+        img = Image.new("RGB", (800, 300), "white")
         draw = ImageDraw.Draw(img)
-        draw.text((20, 20), "ЦИЦАР ФЕДОР 4008 595794", fill="black")
+        font = None
+        for fp in [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+        ]:
+            if os.path.isfile(fp):
+                try:
+                    font = ImageFont.truetype(fp, 36)
+                    break
+                except Exception:
+                    pass
+        if font:
+            draw.text((30, 80), "ЦИЦАР ФЕДОР МИХАЙЛОВИЧ", fill="black", font=font)
+            draw.text((30, 140), "4008 595794", fill="black", font=font)
+        else:
+            draw.text((30, 80), "ЦИЦАР ФЕДОР 4008 595794", fill="black")
         path = os.path.join(tempfile.gettempdir(), "diag_test.jpg")
-        img.save(path, "JPEG")
+        img.save(path, "JPEG", quality=95)
 
         from ocr_extractor import extract_text_from_image, parse_passport_data
         ocr = extract_text_from_image(path)
