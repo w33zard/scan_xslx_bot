@@ -17,4 +17,5 @@ jobs:
           script: |
             cd /opt/scan_xslx_bot
             git pull
+            bash scripts/setup_server.sh 2>/dev/null || true
             sudo systemctl restart scan-xslx-bot

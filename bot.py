@@ -46,6 +46,53 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 @admin_only
+async def cmd_diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Полная диагностика: Yandex, Tesseract, OCR, парсинг"""
+    lines = []
+    # 1. Yandex key
+    key = os.environ.get("YANDEX_VISION_API_KEY", "")
+    lines.append(f"1. Yandex API: {'✅ ключ есть' if key else '❌ ключ НЕ задан'}")
+
+    # 2. Tesseract
+    try:
+        import pytesseract
+        v = pytesseract.get_tesseract_version()
+        lines.append(f"2. Tesseract: ✅ {v}")
+    except Exception as e:
+        lines.append(f"2. Tesseract: ❌ не установлен ({e})")
+
+    # 3. Создаём тестовое изображение и запускаем OCR
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        img = Image.new("RGB", (600, 200), "white")
+        draw = ImageDraw.Draw(img)
+        draw.text((20, 20), "ЦИЦАР ФЕДОР 4008 595794", fill="black")
+        path = os.path.join(tempfile.gettempdir(), "diag_test.jpg")
+        img.save(path, "JPEG")
+
+        from ocr_extractor import extract_text_from_image, parse_passport_data
+        ocr = extract_text_from_image(path)
+        lines.append(f"3. OCR: {len(ocr)} символов")
+        if ocr:
+            lines.append(f"   Текст: {ocr[:150]}...")
+        else:
+            lines.append("   ❌ OCR пустой — ни Yandex, ни Tesseract не вернули текст")
+
+        data = parse_passport_data(ocr or "")
+        fio = data.get("Фамилия") or data.get("Имя") or data.get("Отчество")
+        series = data.get("Серия и номер паспорта")
+        lines.append(f"4. Парсинг: ФИО={bool(fio)}, Серия={series or 'пусто'}")
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
+    except Exception as e:
+        lines.append(f"3-4. Ошибка: {e}")
+
+    await update.message.reply_text("🔍 Диагностика:\n\n" + "\n".join(lines))
+
+
+@admin_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Приветственное сообщение"""
     await update.message.reply_text(
@@ -194,6 +241,7 @@ def main() -> None:
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("test", cmd_test))
+    app.add_handler(CommandHandler("diagnose", cmd_diagnose))
     app.add_handler(CommandHandler("ready", process_ready))
     app.add_handler(
         MessageHandler(filters.Document.ALL, handle_document)
