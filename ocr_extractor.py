@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import cv2
 import pytesseract
 
@@ -105,7 +106,7 @@ def _extract_series_from_vertical_red(image_path: str) -> str:
         res = _try_ocr(binary1)
         if res:
             return res
-        diff = cv2.subtract(r, cv2.maximum(g, b))
+        diff = cv2.subtract(r, np.maximum(g, b))
         _, binary2 = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
         res = _try_ocr(binary2)
         if res:
@@ -299,9 +300,12 @@ def _is_garbage(text: str) -> bool:
 
 def _append_vertical_series(image_path: str, text: str) -> str:
     """Добавить серию/номер из правой вертикальной области (красные цифры)"""
-    vert = _extract_series_from_vertical_red(image_path)
-    if vert:
-        return (text + "\n" + vert).strip() if text else vert
+    try:
+        vert = _extract_series_from_vertical_red(image_path)
+        if vert:
+            return (text + "\n" + vert).strip() if text else vert
+    except Exception:
+        pass
     return text or ""
 
 
