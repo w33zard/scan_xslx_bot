@@ -30,6 +30,22 @@ def admin_only(func):
 
 
 @admin_only
+async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Проверка парсинга — убедиться, что логика работает"""
+    from ocr_extractor import parse_passport_data
+    sample = "ЦИЦАР\nФамилия\nФЕДОР\nИмя\nМИХАЙЛОВИЧ\nОтчество\n03.04.1987\n4008 595794"
+    data = parse_passport_data(sample)
+    fio = data.get("Фамилия") and data.get("Имя") and data.get("Отчество")
+    series = data.get("Серия и номер паспорта")
+    if fio and series:
+        await update.message.reply_text(
+            f"✅ Парсинг работает.\nФИО: {data['Фамилия']} {data['Имя']} {data['Отчество']}\nСерия: {series}"
+        )
+    else:
+        await update.message.reply_text(f"❌ Парсинг не извлёк данные. Получено: {data}")
+
+
+@admin_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Приветственное сообщение"""
     await update.message.reply_text(
@@ -164,6 +180,7 @@ def main() -> None:
     app = Application.builder().token(token).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("test", cmd_test))
     app.add_handler(CommandHandler("ready", process_ready))
     app.add_handler(
         MessageHandler(filters.Document.ALL, handle_document)

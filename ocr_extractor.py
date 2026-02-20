@@ -168,24 +168,75 @@ def _yandex_vision_ocr(image_path: str) -> str:
 
     try:
         import requests
-        import tempfile
 
-        img = cv2.imread(image_path)
-        if img is None:
+        def _extract_from_response(data) -> str:
+            texts = []
+            full_yt = ""
+            results = data.get("results") or data.get("result") or []
+            if not isinstance(results, list):
+                results = [results] if results else []
+            if not results and data.get("error"):
+                return ""
+            for res in results:
+                if not isinstance(res, dict):
+                    continue
+                items = res.get("results")
+                if items is None:
+                    items = res.get("result") or []
+                if not isinstance(items, list):
+                    items = [items] if items else []
+                if not items and ("textDetection" in res or "textAnnotation" in res):
+                    items = [res]
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    td = item.get("textDetection") or item.get("textAnnotation") or {}
+                    if isinstance(td, str):
+                        return td.strip()
+                    ft = (td.get("fullText") or "").strip()
+                    if ft:
+                        full_yt = ft
+                    for page in td.get("pages", []):
+                        for block in page.get("blocks", []):
+                            for line in block.get("lines", []):
+                                lt = line.get("text")
+                                if not lt and line.get("words"):
+                                    lt = " ".join(str(w.get("text", "")) for w in line.get("words", []))
+                                if lt and str(lt).strip():
+                                    texts.append(str(lt).strip())
+            lines_str = "\n".join(texts) if texts else ""
+            out = (full_yt + "\n" + lines_str).strip() if full_yt and lines_str else (full_yt or lines_str)
+            return out
+
+        # Вариант 1: сырой файл (JPEG/PNG) — без перекодировки
+        content = None
+        path_lower = image_path.lower()
+        if path_lower.endswith((".jpg", ".jpeg", ".png")):
+            try:
+                with open(image_path, "rb") as f:
+                    raw = f.read()
+                if len(raw) < 900_000:
+                    content = base64.b64encode(raw).decode("utf-8")
+            except Exception:
+                pass
+
+        if not content:
+            img = cv2.imread(image_path)
+            if img is None:
+                return ""
+            h, w = img.shape[:2]
+            max_side = 1600
+            for q in [90, 85, 75, 65]:
+                scale = min(1.0, max_side / max(h, w))
+                img_send = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else img
+                _, buf = cv2.imencode(".jpg", img_send, [cv2.IMWRITE_JPEG_QUALITY, q])
+                if len(buf) < 900_000:
+                    content = base64.b64encode(buf.tobytes()).decode("utf-8")
+                    break
+                max_side = int(max_side * 0.8)
+
+        if not content:
             return ""
-
-        # Yandex лимит ~1MB — уменьшаем, если больше
-        h, w = img.shape[:2]
-        max_side = 1600
-        for q in [85, 75, 65]:
-            scale = min(1.0, max_side / max(h, w))
-            img_send = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else img
-            _, buf = cv2.imencode(".jpg", img_send, [cv2.IMWRITE_JPEG_QUALITY, q])
-            if len(buf) < 900_000:
-                break
-            max_side = int(max_side * 0.7)
-
-        content = base64.b64encode(buf.tobytes()).decode("utf-8")
 
         url = "https://vision.api.cloud.yandex.net/vision/v1/batchAnalyze"
         headers = {"Authorization": f"Api-Key {api_key}", "Content-Type": "application/json"}
@@ -198,26 +249,16 @@ def _yandex_vision_ocr(image_path: str) -> str:
                 }]
             }]
         }
-        r = requests.post(url, json=body, headers=headers, timeout=30)
+        r = requests.post(url, json=body, headers=headers, timeout=60)
         r.raise_for_status()
         data = r.json()
-
-        texts = []
-        full_yt = ""
-        for res in data.get("results", []):
-            for item in res.get("results", []):
-                td = item.get("textDetection") or item.get("textAnnotation") or {}
-                full_yt = (td.get("fullText") or "").strip()
-                for page in td.get("pages", []):
-                    for block in page.get("blocks", []):
-                        for line in block.get("lines", []):
-                            lt = line.get("text") or " ".join(w.get("text", "") for w in line.get("words", []))
-                            if lt and lt.strip():
-                                texts.append(lt.strip())
-        lines_str = "\n".join(texts) if texts else ""
-        # Объединяем fullText и lines — один может быть пустым, второй содержать данные
-        combined = (full_yt + "\n" + lines_str).strip() if full_yt and lines_str else (full_yt or lines_str)
-        return combined
+        if os.environ.get("SAVE_YANDEX_RESPONSE"):
+            import json
+            import tempfile
+            p = Path(tempfile.gettempdir()) / "yandex_response.json"
+            p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(f"[DEBUG] Yandex response saved to {p}")
+        return _extract_from_response(data)
     except Exception as e:
         print(f"Yandex Vision error: {e}")
         return ""
@@ -454,7 +495,8 @@ def parse_passport_data(ocr_text: str) -> dict:
                 continue
             if field == "имя" and "отчество" in ln:
                 continue
-            for idx in (i - 2, i - 1, i + 1, i + 2):
+            # Значение чаще всего НИЖЕ метки (i+1), реже выше (i-1)
+            for idx in (i + 1, i + 2, i - 1, i - 2):
                 if 0 <= idx < len(lines):
                     parts = [p for p in re.findall(r"[А-ЯЁа-яё\-]+", lines[idx]) if len(p) >= min_len]
                     if not parts:
@@ -486,26 +528,40 @@ def parse_passport_data(ocr_text: str) -> dict:
             data["Имя"] = data["Имя"] or best_fio.group(2)
             data["Отчество"] = data["Отчество"] or best_fio.group(3)
         # Имя Отчество — пара, где второе похоже на отчество
-        # Fallback: 3 подряд строки = ФИО (ЦИЦАР, ФЕДОР, МИХАЙЛОВИЧ)
+        # Fallback: 3 подряд строки = ФИО (ЦИЦАР, ФЕДОР, МИХАЙЛОВИЧ) — пропускаем дубликаты
         if (not data["Фамилия"] or not data["Имя"]) and len(lines) >= 3:
             cand = []
             for ln in lines[:25]:
                 w = re.sub(r"[^\w\-]", "", ln).strip()
                 if 2 <= len(w) <= 50 and w.isalpha() and w.lower() not in _skip and not re.match(r"^\d+$", w):
+                    if cand and w.upper() == cand[-1].upper():
+                        continue
                     cand.append(w)
                     if len(cand) >= 3 and cand[-1].lower()[-2:] in ("вич", "вна", "ова", "ич"):
                         data["Фамилия"] = data["Фамилия"] or cand[0]
                         data["Имя"] = data["Имя"] or cand[1]
                         data["Отчество"] = data["Отчество"] or cand[2]
                         break
-        # Ультра-fallback: первые 3 строки с кириллицей 2+ символов = ФИО
+        # Ультра-fallback: первые 3 уникальные строки с кириллицей = ФИО
         if (not data["Фамилия"] or not data["Имя"]) and len(lines) >= 3:
-            cand = [re.sub(r"[^\w\-]", "", ln).strip() for ln in lines[:10]]
-            cand = [w for w in cand if 2 <= len(w) <= 40 and re.search(r"[А-Яа-яЁё]", w) and not w.isdigit()]
-            if len(cand) >= 3:
-                data["Фамилия"] = data["Фамилия"] or cand[0]
-                data["Имя"] = data["Имя"] or cand[1]
-                data["Отчество"] = data["Отчество"] or cand[2]
+            seen = set()
+            cand = []
+            for ln in lines[:15]:
+                w = re.sub(r"[^\w\-]", "", ln).strip()
+                if 2 <= len(w) <= 40 and re.search(r"[А-Яа-яЁё]", w) and not w.isdigit() and w.lower() not in _skip:
+                    wk = w.upper()
+                    if wk not in seen:
+                        seen.add(wk)
+                        cand.append(w)
+                    if len(cand) >= 3 and cand[-1].lower()[-2:] in ("вич", "вна", "ова", "ич"):
+                        data["Фамилия"] = data["Фамилия"] or cand[0]
+                        data["Имя"] = data["Имя"] or cand[1]
+                        data["Отчество"] = data["Отчество"] or cand[2]
+                        break
+            if not data["Фамилия"] and len(cand) >= 3:
+                data["Фамилия"] = cand[0]
+                data["Имя"] = cand[1]
+                data["Отчество"] = cand[2]
         skip_words = {"животный", "личный", "код", "граждан", "россий", "федера", "паспорт", "отдела"}
         if not data["Имя"] or not data["Отчество"]:
             for txt in (full_norm, full_text):
