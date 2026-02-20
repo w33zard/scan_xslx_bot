@@ -6,6 +6,8 @@
 import base64
 import os
 import re
+
+from parse_passport import parse_passport_data
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
@@ -379,310 +381,7 @@ def extract_text_from_image(image_path: str) -> str:
         return ""
 
 
-def parse_passport_data(ocr_text: str) -> dict:
-    """
-    Парсинг данных паспорта из OCR-текста.
-    Поддерживает формат российского внутреннего паспорта.
-    """
-    data = {col: "" for col in EXCEL_COLUMNS[1:]}  # без № п/п
-
-    lines = [line.strip() for line in ocr_text.split("\n") if line.strip()]
-
-    # Паттерны для извлечения данных
-    patterns = {
-        "Фамилия": [
-            r"(?:Фамилия|фамилия)\s*[:]?\s*([А-Яа-яЁё\s-]+)",
-            r"^([А-Яа-яЁё]+)\s+[А-Яа-яЁё]+\s+[А-Яа-яЁё]+",  # первое слово в строке с ФИО
-        ],
-        "Имя": [
-            r"(?:Имя|имя)\s*[:]?\s*([А-Яа-яЁё\s-]+)",
-        ],
-        "Отчество": [
-            r"(?:Отчество|отчество)\s*[:]?\s*([А-Яа-яЁё\s-]+)",
-        ],
-        "Дата рождения": [
-            r"(?:Дата рождения|дата рождения)\s*[:]?\s*(\d{2}\.\d{2}\.\d{4})",
-            r"(\d{2}\.\d{2}\.\d{4})",
-        ],
-        "Место рождения": [
-            r"(?:Место рождения|место рождения)\s*[:]?\s*(.+?)(?=\d{2}\.\d{2}|\n|$)",
-        ],
-        "Серия и номер паспорта": [
-            r"(\d{2}\s?\d{2}\s?\d{6})",
-            r"(\d{4}\s?\d{6})",
-        ],
-        "Дата выдачи": [
-            r"(?:Дата выдачи|дата выдачи)\s*[:]?\s*(\d{2}\.\d{2}\.\d{4})",
-        ],
-        "Кем выдан": [
-            r"(?:Кем выдан|кем выдан|выдан)\s*[:]?\s*(.+?)(?=\d{2}\.\d{2}|\n\n|Код|код|$)",
-        ],
-        "ИНН": [
-            r"(?:ИНН|инн)\s*[:]?\s*(\d{10,12})",
-            r"\b(\d{12})\b",
-        ],
-        "Адрес регистрации": [
-            r"(?:Адрес|адрес|Место жительства|место жительства)\s*[:]?\s*(.+?)(?=\n\n|$)",
-        ],
-    }
-
-    full_text = ocr_text
-    # Нормализованный текст — цифры/слова могут быть разбиты переносами
-    full_norm = re.sub(r"\s+", " ", full_text)
-
-    # Серия и номер — XX XX XXXXXX (цифры могут быть разбиты переносами)
-    for txt in (full_norm, full_text):
-        series_match = re.search(r"\b(\d{2})[\s\-]?(\d{2})[\s\-]?(\d{6})\b", txt)
-        if series_match:
-            data["Серия и номер паспорта"] = f"{series_match.group(1)} {series_match.group(2)} {series_match.group(3)}"
-            break
-        series_match = re.search(r"\b(\d{4})[\s\-]?(\d{6})\b", txt)
-        if series_match:
-            s, n = series_match.group(1), series_match.group(2)
-            if not s.startswith(("19", "20")):
-                data["Серия и номер паспорта"] = f"{s[:2]} {s[2:]} {n}"
-                break
-    if not data["Серия и номер паспорта"]:
-        # Любые 10 цифр подряд (не год) — OCR может вернуть без пробелов
-        digits_only = re.sub(r"\D", "", full_text)
-        for i in range(len(digits_only) - 9):
-            chunk = digits_only[i : i + 10]
-            if chunk[:2] not in ("19", "20") and chunk[2:4] not in ("19", "20"):
-                data["Серия и номер паспорта"] = f"{chunk[:2]} {chunk[2:4]} {chunk[4:]}"
-                break
-    if not data["Серия и номер паспорта"]:
-        for m in re.finditer(r"\b(\d{4})\b", full_text):
-            f = m.group(1)
-            if f.startswith(("19", "20")):
-                continue
-            rest = full_text[m.end():]
-            six_m = re.search(r"\b(\d{6})\b", rest)
-            if six_m:
-                data["Серия и номер паспорта"] = f"{f[:2]} {f[2:]} {six_m.group(1)}"
-                break
-    if not data["Серия и номер паспорта"]:
-        for pat in [
-            r"\b(\d{2})\s*(\d{2})\s*(\d{5,6})\b",
-            r"\b(\d{4})\s*(\d{6})\b",
-            r"\b(\d{10})\b",
-        ]:
-            m = re.search(pat, full_text)
-            if m:
-                if len(m.groups()) == 3:
-                    data["Серия и номер паспорта"] = f"{m.group(1)} {m.group(2)} {m.group(3)}"
-                elif len(m.groups()) == 2:
-                    s, n = m.group(1), m.group(2)
-                    data["Серия и номер паспорта"] = f"{s[:2]} {s[2:]} {n}"
-                else:
-                    ten = m.group(1)
-                    data["Серия и номер паспорта"] = f"{ten[:2]} {ten[2:4]} {ten[4:]}"
-                break
-
-    # Код подразделения XXX-XXX — можно добавить к "Кем выдан"
-    code_match = re.search(r"\b(\d{3}-\d{3})\b", full_text)
-    subdiv_code = code_match.group(1) if code_match else ""
-
-    # Даты: "Дата рождения DD.MM.YYYY" и "Дата выдачи DD.MM.YYYY"
-    dob_match = re.search(r"(?:дата\s+рождения|рождения)[:\s]*(\d{1,2}[.\-]\d{1,2}[.\-]\d{4})", full_text, re.I | re.DOTALL)
-    if dob_match:
-        data["Дата рождения"] = dob_match.group(1).replace("-", ".")
-    vydacha_match = re.search(r"(?:дата\s+выдачи|выдачи)[:\s]*(\d{1,2}[.\-]\d{1,2}[.\-]\d{4})", full_text, re.I | re.DOTALL)
-    if vydacha_match:
-        data["Дата выдачи"] = vydacha_match.group(1).replace("-", ".")
-    if not data["Дата рождения"] and not data["Дата выдачи"]:
-        dob_matches = re.findall(r"\b(\d{1,2}[.\-]\d{1,2}[.\-]\d{4})\b", full_text)
-        if dob_matches:
-            data["Дата рождения"] = dob_matches[0].replace("-", ".")
-            if len(dob_matches) > 1:
-                data["Дата выдачи"] = dob_matches[1].replace("-", ".")
-
-    # ФИО — после метки "Фамилия" или три слова кириллицей подряд
-    fam_match = re.search(r"Фамилия\s*[.:\s]+([А-ЯЁа-яё\-]+)", full_text, re.I)
-    im_match = re.search(r"Имя\s*[.\s]+([А-ЯЁа-яё\-]+)", full_text, re.I)
-    otch_match = re.search(r"(?:Отчество|ОТЧЕСТВО)\s*[.\s]+([А-ЯЁа-яё\-]+)", full_text, re.I)
-    if fam_match:
-        fam_val = fam_match.group(1).strip().split()[0]
-        if len(fam_val) > 3 or not re.match(r"^[А-ЯЁ][А-ЯЁ]$", fam_val):
-            data["Фамилия"] = fam_val
-    if im_match:
-        data["Имя"] = im_match.group(1).strip()
-    if otch_match:
-        data["Отчество"] = otch_match.group(1).strip()
-    # ФИО — следующая или предыдущая строка после метки (Yandex читает блоками, порядок может отличаться)
-    def _clean_word(s):
-        return re.sub(r"[^\w\-]", "", s).strip()
-
-    for i, line in enumerate(lines):
-        ln = line.lower()
-        # Ищем соседние строки (Yandex может выводить значение до или после метки)
-        for field, key, min_len, extra_check in [
-            ("фамилия", "Фамилия", 3, lambda v: not re.match(r"^[А-ЯЁ][А-ЯЁ]$", v)),
-            ("имя", "Имя", 2, lambda v: True),
-            ("отчество", "Отчество", 2, lambda v: len(v) >= 4 and v[-2:] in ("вич", "вна", "ова", "ич")),
-        ]:
-            if field not in ln or data[key]:
-                continue
-            if field == "имя" and "отчество" in ln:
-                continue
-            # Значение чаще всего НИЖЕ метки (i+1), реже выше (i-1)
-            for idx in (i + 1, i + 2, i - 1, i - 2):
-                if 0 <= idx < len(lines):
-                    parts = [p for p in re.findall(r"[А-ЯЁа-яё\-]+", lines[idx]) if len(p) >= min_len]
-                    if not parts:
-                        continue
-                    v = parts[-1] if (key == "Отчество" and len(parts) >= 2 and parts[-1].lower()[-2:] in ("вич", "вна", "ова", "ич")) else parts[0]
-                    if min_len <= len(v) <= 50 and v.isalpha() and extra_check(v):
-                        data[key] = v
-                        break
-    # ФИО — последний fallback: первая строка из 3 подряд кириллических слов (Фамилия Имя Отчество)
-    _word = r"[А-ЯЁа-яё][А-ЯЁа-яё]{1,}"
-    _skip = {"российская", "паспорт", "личный", "граждан", "код", "фамилия", "имя", "отчество", "дата", "место"}
-    if not data["Фамилия"] or not data["Имя"]:
-        best_fio = None
-        for txt in (full_norm, full_text):
-            for m in re.finditer(rf"({_word})\s+({_word})\s+({_word})", txt):
-                w3, w1 = m.group(3).lower(), m.group(1).lower()
-                if w3.endswith(("вич", "вна", "ич", "ова")) and w1 not in _skip:
-                    best_fio = m
-                    break
-            if best_fio:
-                break
-        if not best_fio:
-            for txt in (full_norm, full_text):
-                best_fio = re.search(rf"({_word})\s+({_word})\s+({_word})", txt)
-                if best_fio:
-                    break
-        if best_fio and (not data["Фамилия"] or not data["Имя"]):
-            data["Фамилия"] = data["Фамилия"] or best_fio.group(1)
-            data["Имя"] = data["Имя"] or best_fio.group(2)
-            data["Отчество"] = data["Отчество"] or best_fio.group(3)
-        # Имя Отчество — пара, где второе похоже на отчество
-        # Fallback: 3 подряд строки = ФИО (ЦИЦАР, ФЕДОР, МИХАЙЛОВИЧ) — пропускаем дубликаты
-        if (not data["Фамилия"] or not data["Имя"]) and len(lines) >= 3:
-            cand = []
-            for ln in lines[:25]:
-                w = re.sub(r"[^\w\-]", "", ln).strip()
-                if 2 <= len(w) <= 50 and w.isalpha() and w.lower() not in _skip and not re.match(r"^\d+$", w):
-                    if cand and w.upper() == cand[-1].upper():
-                        continue
-                    cand.append(w)
-                    if len(cand) >= 3 and cand[-1].lower()[-2:] in ("вич", "вна", "ова", "ич"):
-                        data["Фамилия"] = data["Фамилия"] or cand[0]
-                        data["Имя"] = data["Имя"] or cand[1]
-                        data["Отчество"] = data["Отчество"] or cand[2]
-                        break
-        # Ультра-fallback: первые 3 уникальные строки с кириллицей = ФИО
-        if (not data["Фамилия"] or not data["Имя"]) and len(lines) >= 3:
-            seen = set()
-            cand = []
-            for ln in lines[:15]:
-                w = re.sub(r"[^\w\-]", "", ln).strip()
-                if 2 <= len(w) <= 40 and re.search(r"[А-Яа-яЁё]", w) and not w.isdigit() and w.lower() not in _skip:
-                    wk = w.upper()
-                    if wk not in seen:
-                        seen.add(wk)
-                        cand.append(w)
-                    if len(cand) >= 3 and cand[-1].lower()[-2:] in ("вич", "вна", "ова", "ич"):
-                        data["Фамилия"] = data["Фамилия"] or cand[0]
-                        data["Имя"] = data["Имя"] or cand[1]
-                        data["Отчество"] = data["Отчество"] or cand[2]
-                        break
-            if not data["Фамилия"] and len(cand) >= 3:
-                data["Фамилия"] = cand[0]
-                data["Имя"] = cand[1]
-                data["Отчество"] = cand[2]
-        skip_words = {"животный", "личный", "код", "граждан", "россий", "федера", "паспорт", "отдела"}
-        if not data["Имя"] or not data["Отчество"]:
-            for txt in (full_norm, full_text):
-                for two_match in re.finditer(rf"({_word})\s+({_word})", txt):
-                    w1, w2 = two_match.group(1).lower(), two_match.group(2).lower()
-                    if w1 not in skip_words and w2 not in skip_words and len(w2) >= 4 and w2[-2:] in ("вич", "вна", "ова", "ев", "ин", "ич"):
-                        data["Имя"] = data["Имя"] or two_match.group(1)
-                        data["Отчество"] = data["Отчество"] or two_match.group(2)
-                        break
-                if data["Имя"] and data["Отчество"]:
-                    break
-
-    # ИНН — только 12 цифр (физлицо), не путать с серией паспорта (10 цифр)
-    inn_match = re.search(r"\b(\d{12})\b", full_text)
-    if inn_match:
-        data["ИНН"] = inn_match.group(1)
-
-    # Кем выдан — захватываем до "Дата выдачи" или конца
-    issued_match = re.search(
-        r"(?:паспорт\s+выдан|кем\s+выдан|выдан)\s*[:\s]*([А-Яа-яЁё0-9№\s,.\-/]+?)(?=дата\s+выдачи|код\s+подразделения|$)",
-        full_text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if issued_match:
-        data["Кем выдан"] = re.sub(r"\s+", " ", issued_match.group(1).strip())[:500]
-        if subdiv_code and subdiv_code not in data["Кем выдан"]:
-            data["Кем выдан"] = (data["Кем выдан"] + " " + subdiv_code).strip()
-    elif subdiv_code:
-        data["Кем выдан"] = subdiv_code
-
-    # Место рождения — "ГОР. ЛЕНИНГРАД" или после "Место рождения"
-    birth_place_match = re.search(
-        r"(?:место рождения|Место рождения)[:\s]*([А-Яа-яЁёA-Za-z\s,.\-]+?)(?=\d{1,2}[.\-]\d|серия|паспорт|$)",
-        full_text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if birth_place_match:
-        data["Место рождения"] = re.sub(r"\s+", " ", birth_place_match.group(1).strip())[:150]
-    gor_match = re.search(r"ГОР\.\s*([А-Яа-яЁёA-Za-z\s\-]+?)(?=\d{1,2}\.\d|595|\n\n|$)", full_text)
-    if gor_match and not data["Место рождения"]:
-        data["Место рождения"] = ("гор. " + gor_match.group(1).strip()).strip()[:150]
-    if data["Место рождения"] and re.match(r"^\d", data["Место рождения"]):
-        data["Место рождения"] = ""
-
-    # Адрес — приоритет: полный блок "Зарегистрирован ..." или сборка из полей
-    addr_stop = r"(?:Семейное|Дети|Гражданство|Марки|Кем выдан|Паспорт выдан)"
-    reg_full = re.search(
-        r"(?:Зарегистрирован|зарегистрирован)\s*[:\s]*([А-Яа-яЁё0-9№\s,.\-/]+?)(?=" + addr_stop + r"|\n\n|$)",
-        full_text,
-        re.I | re.DOTALL,
-    )
-    if reg_full:
-        val = re.sub(r"\s+", " ", reg_full.group(1).strip())
-        if len(val) > 15:
-            data["Адрес регистрации"] = val[:450]
-
-    if not data["Адрес регистрации"]:
-        addr_parts = []
-        gor = re.search(r"(?:пункт|гор\.?|город|Гор\.)\s*[:\s]*([А-Яа-яЁё\-\s]+?)(?=\n|р-н|улица|ул\.|дом|д\.|$)", full_text, re.I)
-        rn_before = re.search(r"([А-Яа-яЁё\-]{4,})\s+р-н", full_text)
-        rn_after = re.search(r"р-н\s*[:\s]*([А-Яа-яЁё\-]+)", full_text, re.I)
-        ul = re.search(r"(?:улица|ул\.?)\s*[:\s]*([А-Яа-яЁё0-9\s\-]+?)(?=\n|дом|д\.|корп|кв|$)", full_text, re.I)
-        dom = re.search(r"(?:дом|д\.)\s*[:\s]*(\d+[\s\-]*(?:корп\.?\s*[\-\d]*)?)", full_text, re.I)
-        kv = re.search(r"(?:кв\.?|квартира)\s*[:\s]*(\d+)", full_text, re.I)
-        if gor:
-            addr_parts.append("г. " + gor.group(1).strip())
-        if rn_before:
-            addr_parts.append("р-н " + rn_before.group(1).strip())
-        elif rn_after:
-            addr_parts.append("р-н " + rn_after.group(1).strip())
-        if ul:
-            addr_parts.append(ul.group(1).strip())
-        if dom:
-            d = re.sub(r"\s+", " ", dom.group(1).strip())
-            addr_parts.append("д. " + d)
-        if kv:
-            addr_parts.append("кв. " + kv.group(1).strip())
-        if addr_parts:
-            data["Адрес регистрации"] = ", ".join(addr_parts)[:450]
-    if not data["Адрес регистрации"]:
-        for pat in [
-            r"(?:место\s+жительства|адрес\s+регистрации)\s*[:\s]*([А-Яа-яЁё0-9\s,.\-/]+?)(?=\n\n|" + addr_stop + r"|$)",
-            r"(?:гор\.|город)\s+([А-Яа-яЁё0-9\s,.\-/]+?)(?=р-н|улица|дом|$)",
-        ]:
-            m = re.search(pat, full_text, re.I | re.DOTALL)
-            if m:
-                val = re.sub(r"\s+", " ", m.group(1).strip())[:400]
-                if len(val) > 8 and not val.replace(" ", "").replace(".", "").replace(",", "").isdigit():
-                    data["Адрес регистрации"] = val
-                    break
-
-    return data
+# parse_passport_data импортируется из parse_passport.py (чистая логика с нуля)
 
 
 def process_passport_image(image_path: str, index: int = 1) -> dict:
@@ -693,17 +392,28 @@ def process_passport_image(image_path: str, index: int = 1) -> dict:
     data = parse_passport_data(ocr_text)
     if not data["Серия и номер паспорта"]:
         data["Серия и номер паспорта"] = _extract_series_from_vertical_red(image_path)
-    # При пустых ключевых полях — сохраняем последний OCR для отладки
-    if (not data["Фамилия"] or not data["Серия и номер паспорта"]) and ocr_text:
+    # Сохраняем OCR для отладки
+    _bad = (
+        (not data["Фамилия"] or not data["Серия и номер паспорта"]) or
+        (data.get("Имя") or "").lower() in ("выдан", "тп") or
+        (data.get("Отчество") or "").lower() in ("выдан", "тп") or
+        ("77 87" in (data.get("Серия и номер паспорта") or ""))
+    )
+    if _bad and ocr_text:
         import tempfile
-        p = Path(tempfile.gettempdir()) / "ocr_last_empty.txt"
-        p.write_text(f"=== {image_path} ===\n{ocr_text}\n\n=== PARSED ===\n{data}", encoding="utf-8")
+        for p in [Path(__file__).parent / "debug_ocr_last.txt", Path(tempfile.gettempdir()) / "ocr_last_empty.txt"]:
+            try:
+                p.write_text(f"=== {image_path} ===\n{ocr_text}\n\n=== PARSED ===\n{data}", encoding="utf-8")
+                break
+            except Exception:
+                pass
     data_with_num = {"№ п/п": str(index), **data}
     if ocr_text and not any(data.values()) and not _is_garbage(ocr_text):
         data_with_num["Примечания"] = ocr_text.strip()[:500].replace("\n", " ")
     return data_with_num
 
 
+# (старый код парсера удалён — см. parse_passport.py)
 def _merge_passport_data(base: dict, extra: dict) -> dict:
     """Объединить данные — extra дополняет пустые поля base"""
     merged = base.copy()
@@ -738,10 +448,20 @@ def _process_one_person(parent: Path, images: list[Path], person_idx: int) -> di
     data_with_num = {"№ п/п": str(person_idx), **data}
     if combined_ocr and not any(data.values()):
         data_with_num["Примечания"] = combined_ocr[:500].replace("\n", " ")
-    if (not data["Фамилия"] or not data["Серия и номер паспорта"]) and combined_ocr:
+    _bad = (
+        (not data["Фамилия"] or not data["Серия и номер паспорта"]) or
+        (data.get("Имя") or "").lower() in ("выдан", "тп") or
+        (data.get("Отчество") or "").lower() in ("выдан", "тп") or
+        ("77 87" in (data.get("Серия и номер паспорта") or ""))
+    )
+    if _bad and combined_ocr:
         import tempfile
-        p = Path(tempfile.gettempdir()) / "ocr_last_empty.txt"
-        p.write_text(f"=== person {person_idx} ===\n{combined_ocr[:2000]}\n\n=== PARSED ===\n{data}", encoding="utf-8")
+        for p in [Path(__file__).parent / "debug_ocr_last.txt", Path(tempfile.gettempdir()) / "ocr_last_empty.txt"]:
+            try:
+                p.write_text(f"=== person {person_idx} ===\n{combined_ocr[:3000]}\n\n=== PARSED ===\n{data}", encoding="utf-8")
+                break
+            except Exception:
+                pass
     return data_with_num
 
 

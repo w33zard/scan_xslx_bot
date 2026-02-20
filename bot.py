@@ -103,7 +103,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "📊 Я обработаю сканы через OCR и верну Excel-файл с данными:\n"
         "ФИО, дата рождения, место рождения, серия и номер, дата выдачи, кем выдан, ИНН, адрес.\n\n"
         "⚠️ Требования: чёткие фото, хорошее освещение. Поддержка русского языка.\n\n"
-        "🔧 /diagnose — проверка OCR и зависимостей"
+        "🔧 /diagnose — проверка OCR и зависимостей\n"
+        "🔍 /ocr_raw — отправить фото и получить сырой OCR + разбор (отладка)"
     )
 
 
@@ -170,8 +171,38 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 @admin_only
+async def cmd_ocr_raw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Ожидание фото для показа сырого OCR и результата парсинга (отладка)"""
+    context.user_data["next_photo_ocr_debug"] = True
+    await update.message.reply_text("📷 Отправьте фото паспорта — покажу сырой OCR и разбор.")
+
+
+@admin_only
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка фото — сохраняем в контекст и ждём /готово или следующее фото"""
+    if context.user_data.get("next_photo_ocr_debug"):
+        context.user_data["next_photo_ocr_debug"] = False
+        photo = update.message.photo[-1]
+        file = await context.bot.get_file(photo.file_id)
+        photo_path = os.path.join(tempfile.gettempdir(), f"ocr_debug_{photo.file_unique_id}.jpg")
+        await file.download_to_drive(photo_path)
+        try:
+            from ocr_extractor import extract_text_from_image, parse_passport_data
+            ocr = extract_text_from_image(photo_path)
+            data = parse_passport_data(ocr or "")
+            msg = f"📄 Сырой OCR ({len(ocr)} симв.):\n{(ocr or '(пусто)')[:1200]}\n\n"
+            msg += "📋 Разбор:\n"
+            for k, v in data.items():
+                if v:
+                    msg += f"{k}: {v}\n"
+            await update.message.reply_text(msg[:4000])
+        finally:
+            try:
+                os.unlink(photo_path)
+            except Exception:
+                pass
+        return
+
     if "pending_photos" not in context.user_data:
         context.user_data["pending_photos"] = []
 
@@ -243,6 +274,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("test", cmd_test))
     app.add_handler(CommandHandler("diagnose", cmd_diagnose))
+    app.add_handler(CommandHandler("ocr_raw", cmd_ocr_raw))
     app.add_handler(CommandHandler("ready", process_ready))
     app.add_handler(
         MessageHandler(filters.Document.ALL, handle_document)

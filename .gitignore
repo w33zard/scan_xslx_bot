@@ -9,4 +9,5 @@ deploy_key
 deploy_key.pub
 123.zip
 test_extract/
-test_ocr.py
+debug_ocr_last.txt
+debug_result.txt
