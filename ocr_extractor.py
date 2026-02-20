@@ -233,14 +233,20 @@ def parse_passport_data(ocr_text: str) -> dict:
 
     full_text = ocr_text
 
-    # Серия и номер — ХХ ХХ ХХХХХХ или ХХХХ ХХХХХХ
-    series_match = re.search(r"\b(\d{2})\s*(\d{2})\s*(\d{6})\b", full_text)
+    # Серия и номер — XX XX XXXXXX, XXXX XXXXXX, XX-XX-XXXXXX
+    series_match = re.search(r"\b(\d{2})[\s\-]?(\d{2})[\s\-]?(\d{6})\b", full_text)
     if not series_match:
-        series_match = re.search(r"\b(\d{4})\s*(\d{6})\b", full_text)
+        series_match = re.search(r"\b(\d{4})[\s\-]?(\d{6})\b", full_text)
         if series_match:
-            data["Серия и номер паспорта"] = f"{series_match.group(1)[:2]} {series_match.group(1)[2:]} {series_match.group(2)}"
+            s, n = series_match.group(1), series_match.group(2)
+            data["Серия и номер паспорта"] = f"{s[:2]} {s[2:]} {n}"
     else:
         data["Серия и номер паспорта"] = f"{series_match.group(1)} {series_match.group(2)} {series_match.group(3)}"
+    if not data["Серия и номер паспорта"]:
+        # Fallback: 10 цифр подряд или с пробелами (серия 4 + номер 6)
+        m = re.search(r"\b(\d{2})\s*(\d{2})\s*(\d{5,6})\b", full_text)
+        if m:
+            data["Серия и номер паспорта"] = f"{m.group(1)} {m.group(2)} {m.group(3)}"
 
     # Код подразделения XXX-XXX — можно добавить к "Кем выдан"
     code_match = re.search(r"\b(\d{3}-\d{3})\b", full_text)
@@ -270,6 +276,21 @@ def parse_passport_data(ocr_text: str) -> dict:
         data["Имя"] = im_match.group(1).strip()
     if otch_match:
         data["Отчество"] = otch_match.group(1).strip()
+    # ФИО со следующей строки после метки
+    for i, line in enumerate(lines):
+        ln = line.lower()
+        if "фамилия" in ln and i + 1 < len(lines) and not data["Фамилия"]:
+            v = re.sub(r"[^\w\-]", "", lines[i + 1]).strip()
+            if 2 <= len(v) <= 50 and all(c.isalpha() or c == "-" for c in v):
+                data["Фамилия"] = v
+        if ("имя" in ln and "отчество" not in ln) and i + 1 < len(lines) and not data["Имя"]:
+            v = re.sub(r"[^\w\-]", "", lines[i + 1]).strip()
+            if 2 <= len(v) <= 50 and all(c.isalpha() or c == "-" for c in v):
+                data["Имя"] = v
+        if "отчество" in ln and i + 1 < len(lines) and not data["Отчество"]:
+            v = re.sub(r"[^\w\-]", "", lines[i + 1]).strip()
+            if 2 <= len(v) <= 50 and all(c.isalpha() or c == "-" for c in v):
+                data["Отчество"] = v
     if not data["Фамилия"] or not data["Имя"]:
         fio_match = re.search(
             r"([А-ЯЁ][а-яё]{2,})\s+([А-ЯЁ][а-яё]{2,})\s+([А-ЯЁ][а-яё]{2,})",
@@ -301,7 +322,7 @@ def parse_passport_data(ocr_text: str) -> dict:
         re.IGNORECASE | re.DOTALL,
     )
     if issued_match:
-        data["Кем выдан"] = re.sub(r"\s+", " ", issued_match.group(1).strip())[:250]
+        data["Кем выдан"] = re.sub(r"\s+", " ", issued_match.group(1).strip())[:500]
         if subdiv_code and subdiv_code not in data["Кем выдан"]:
             data["Кем выдан"] = (data["Кем выдан"] + " " + subdiv_code).strip()
     elif subdiv_code:
@@ -321,14 +342,18 @@ def parse_passport_data(ocr_text: str) -> dict:
     if data["Место рождения"] and re.match(r"^\d", data["Место рождения"]):
         data["Место рождения"] = ""
 
-    # Адрес - часто в конце
-    addr_match = re.search(
-        r"(?:адрес|место жительства|Адрес)\s*[:]?\s*([А-Яа-яЁё0-9\s,.\-/]+?)(?=\n\n|$)",
-        full_text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if addr_match:
-        data["Адрес регистрации"] = addr_match.group(1).strip()[:200]
+    # Адрес — "Место жительства", "Адрес регистрации", "Зарегистрирован", "прописка"
+    addr_patterns = [
+        r"(?:место\s+жительства|адрес\s+регистрации|зарегистрирован|прописка|адрес)\s*[:\s]*([А-Яа-яЁё0-9\s,.\-/]+?)(?=\n\n|$)",
+        r"(?:жительства|проживания)\s*[:\s]*([А-Яа-яЁё0-9\s,.\-/]+?)(?=\n\n|серия|паспорт|$)",
+    ]
+    for pat in addr_patterns:
+        addr_match = re.search(pat, full_text, re.IGNORECASE | re.DOTALL)
+        if addr_match:
+            val = re.sub(r"\s+", " ", addr_match.group(1).strip())[:300]
+            if len(val) > 5 and not val.replace(" ", "").isdigit():
+                data["Адрес регистрации"] = val
+                break
 
     return data
 

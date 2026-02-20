@@ -53,14 +53,19 @@ def create_excel(
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
             cell.alignment = Alignment(wrap_text=True, vertical="top")
 
-    # Автоширина колонок
+    # Автоширина колонок — Кем выдан и Адрес: шире, чтобы текст был виден
+    wide_cols = ("Кем выдан", "Адрес регистрации", "Место рождения")
     for col_idx in range(1, len(columns) + 1):
         col_letter = get_column_letter(col_idx)
+        col_name = columns[col_idx - 1] if col_idx <= len(columns) else ""
         max_length = max(
             len(str(ws.cell(row=r, column=col_idx).value or ""))
             for r in range(1, len(data) + 2)
         )
-        ws.column_dimensions[col_letter].width = min(max_length + 2, 50)
+        if col_name in wide_cols:
+            ws.column_dimensions[col_letter].width = min(max(max_length + 2, 50), 100)
+        else:
+            ws.column_dimensions[col_letter].width = min(max_length + 2, 50)
 
     # Рамки
     thin_border = Border(
