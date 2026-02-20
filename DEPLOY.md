@@ -62,11 +62,20 @@ git push -u origin main
 
 Замените `YOUR_USERNAME` на свой логин GitHub.
 
-### 5. Проверка
+### 5. Проверка и деплой
 
+**Проверить всё (ключи, версия, Tesseract, сервис):**
 ```bash
-ssh root@194.67.88.36
-cd /opt/scan_xslx_bot
-docker compose ps
-docker compose logs -f bot
+ssh root@194.67.88.36 "cd /opt/scan_xslx_bot && bash scripts/check_server.sh"
 ```
+
+**Полный деплой вручную (если GitHub Actions не настроен):**
+```bash
+ssh root@194.67.88.36 "cd /opt/scan_xslx_bot && bash scripts/deploy_full.sh"
+```
+
+**Обязательно в .env:**
+- `TELEGRAM_BOT_TOKEN` — токен от @BotFather
+- `YANDEX_VISION_API_KEY` — для OCR (иначе только Tesseract)
+
+**В боте команда /diagnose** — показывает состояние OCR и зависимостей.
