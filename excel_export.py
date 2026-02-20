@@ -55,6 +55,7 @@ def create_excel(
 
     # Автоширина колонок — Кем выдан и Адрес: шире, чтобы текст был виден
     wide_cols = ("Кем выдан", "Адрес регистрации", "Место рождения")
+    wide_min = {"Кем выдан": 80, "Адрес регистрации": 60, "Место рождения": 40}
     for col_idx in range(1, len(columns) + 1):
         col_letter = get_column_letter(col_idx)
         col_name = columns[col_idx - 1] if col_idx <= len(columns) else ""
@@ -63,7 +64,8 @@ def create_excel(
             for r in range(1, len(data) + 2)
         )
         if col_name in wide_cols:
-            ws.column_dimensions[col_letter].width = min(max(max_length + 2, 50), 100)
+            wmin = wide_min.get(col_name, 60)
+            ws.column_dimensions[col_letter].width = min(max(max_length + 2, wmin), 150)
         else:
             ws.column_dimensions[col_letter].width = min(max_length + 2, 50)
 

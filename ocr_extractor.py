@@ -243,10 +243,22 @@ def parse_passport_data(ocr_text: str) -> dict:
     else:
         data["Серия и номер паспорта"] = f"{series_match.group(1)} {series_match.group(2)} {series_match.group(3)}"
     if not data["Серия и номер паспорта"]:
-        # Fallback: 10 цифр подряд или с пробелами (серия 4 + номер 6)
-        m = re.search(r"\b(\d{2})\s*(\d{2})\s*(\d{5,6})\b", full_text)
-        if m:
-            data["Серия и номер паспорта"] = f"{m.group(1)} {m.group(2)} {m.group(3)}"
+        for pat in [
+            r"\b(\d{2})\s*(\d{2})\s*(\d{5,6})\b",
+            r"\b(\d{4})\s*(\d{6})\b",
+            r"\b(\d{10})\b",
+        ]:
+            m = re.search(pat, full_text)
+            if m:
+                if len(m.groups()) == 3:
+                    data["Серия и номер паспорта"] = f"{m.group(1)} {m.group(2)} {m.group(3)}"
+                elif len(m.groups()) == 2:
+                    s, n = m.group(1), m.group(2)
+                    data["Серия и номер паспорта"] = f"{s[:2]} {s[2:]} {n}"
+                else:
+                    ten = m.group(1)
+                    data["Серия и номер паспорта"] = f"{ten[:2]} {ten[2:4]} {ten[4:]}"
+                break
 
     # Код подразделения XXX-XXX — можно добавить к "Кем выдан"
     code_match = re.search(r"\b(\d{3}-\d{3})\b", full_text)
@@ -267,11 +279,13 @@ def parse_passport_data(ocr_text: str) -> dict:
                 data["Дата выдачи"] = dob_matches[1].replace("-", ".")
 
     # ФИО — после метки "Фамилия" или три слова кириллицей подряд
-    fam_match = re.search(r"Фамилия\s*[.\s]+([А-ЯЁ][а-яё\-]+)", full_text, re.I)
+    fam_match = re.search(r"Фамилия\s*[.:\s]+([А-ЯЁа-яё\-]+)", full_text, re.I)
     im_match = re.search(r"Имя\s*[.\s]+([А-ЯЁ][а-яё\-]+)", full_text, re.I)
     otch_match = re.search(r"(?:Отчество|ОТЧЕСТВО)\s*[.\s]+([А-ЯЁ][а-яё\-]+)", full_text, re.I)
     if fam_match:
-        data["Фамилия"] = fam_match.group(1).strip()
+        fam_val = fam_match.group(1).strip().split()[0]
+        if len(fam_val) > 3 or not re.match(r"^[А-ЯЁ][А-ЯЁ]$", fam_val):
+            data["Фамилия"] = fam_val
     if im_match:
         data["Имя"] = im_match.group(1).strip()
     if otch_match:
@@ -281,7 +295,7 @@ def parse_passport_data(ocr_text: str) -> dict:
         ln = line.lower()
         if "фамилия" in ln and i + 1 < len(lines) and not data["Фамилия"]:
             v = re.sub(r"[^\w\-]", "", lines[i + 1]).strip()
-            if 2 <= len(v) <= 50 and all(c.isalpha() or c == "-" for c in v):
+            if 3 <= len(v) <= 50 and all(c.isalpha() or c == "-" for c in v) and not re.match(r"^[А-ЯЁ][А-ЯЁ]$", v):
                 data["Фамилия"] = v
         if ("имя" in ln and "отчество" not in ln) and i + 1 < len(lines) and not data["Имя"]:
             v = re.sub(r"[^\w\-]", "", lines[i + 1]).strip()
@@ -315,9 +329,9 @@ def parse_passport_data(ocr_text: str) -> dict:
     if inn_match:
         data["ИНН"] = inn_match.group(1)
 
-    # Кем выдан — текст между "Паспорт выдан"/"выдан" и "Дата выдачи" или кодом XXX-XXX
+    # Кем выдан — захватываем до "Дата выдачи" или конца
     issued_match = re.search(
-        r"(?:паспорт\s+выдан|кем\s+выдан|выдан)\s*[:\s]*([А-Яа-яЁё0-9№\s,.\-/]+?)(?=\d{3}-\d{3}|дата\s+выдачи|код\s+подразделения|$)",
+        r"(?:паспорт\s+выдан|кем\s+выдан|выдан)\s*[:\s]*([А-Яа-яЁё0-9№\s,.\-/]+?)(?=дата\s+выдачи|код\s+подразделения|$)",
         full_text,
         re.IGNORECASE | re.DOTALL,
     )
@@ -342,10 +356,12 @@ def parse_passport_data(ocr_text: str) -> dict:
     if data["Место рождения"] and re.match(r"^\d", data["Место рождения"]):
         data["Место рождения"] = ""
 
-    # Адрес — "Место жительства", "Адрес регистрации", "Зарегистрирован", "прописка"
+    # Адрес — прописка на отдельной странице
     addr_patterns = [
-        r"(?:место\s+жительства|адрес\s+регистрации|зарегистрирован|прописка|адрес)\s*[:\s]*([А-Яа-яЁё0-9\s,.\-/]+?)(?=\n\n|$)",
-        r"(?:жительства|проживания)\s*[:\s]*([А-Яа-яЁё0-9\s,.\-/]+?)(?=\n\n|серия|паспорт|$)",
+        r"(?:место\s+жительства|адрес\s+регистрации|зарегистрирован|прописка|адрес)\s*[:\s]*([А-Яа-яЁё0-9\s,.\-/]+)",
+        r"(?:жительства|проживания)\s*[:\s]*([А-Яа-яЁё0-9\s,.\-/]+)",
+        r"(?:гор\.|город|г\.)\s*([А-Яа-яЁё0-9\s,.\-/]+?)(?=\n|серия|паспорт|$)",
+        r"([А-ЯЁ][а-яё]+ск(ая|ий)\s+обл[а-я]*\.?\s*[,\.\s]+[А-Яа-яЁё0-9\s,.\-]+)",
     ]
     for pat in addr_patterns:
         addr_match = re.search(pat, full_text, re.IGNORECASE | re.DOTALL)
@@ -371,9 +387,21 @@ def process_passport_image(image_path: str, index: int = 1) -> dict:
     return data_with_num
 
 
+def _merge_passport_data(base: dict, extra: dict) -> dict:
+    """Объединить данные — extra дополняет пустые поля base"""
+    merged = base.copy()
+    for k, v in extra.items():
+        if k == "№ п/п":
+            continue
+        if v and (not merged.get(k) or (k in ("Адрес регистрации", "Кем выдан") and len(str(v)) > len(str(merged.get(k, ""))))):
+            merged[k] = v
+    return merged
+
+
 def process_images_from_folder(folder_path: str) -> list[dict]:
     """
-    Обработать все изображения в папке (включая вложенные)
+    Обработать все изображения. Каждые 2 изображения = 1 человек (разворот + прописка).
+    OCR объединяется, чтобы адрес со 2-й страницы попал в строку.
     """
     folder = Path(folder_path)
     image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"}
@@ -382,7 +410,24 @@ def process_images_from_folder(folder_path: str) -> list[dict]:
     )
 
     results = []
-    for i, img_path in enumerate(image_files, start=1):
-        row = process_passport_image(str(img_path), index=i)
-        results.append(row)
+    i = 0
+    person_idx = 1
+    while i < len(image_files):
+        # Объединяем OCR от 1–2 изображений (основная + прописка)
+        combined_ocr = ""
+        for j in range(min(2, len(image_files) - i)):
+            text = extract_text_from_image(str(image_files[i + j]))
+            if text:
+                combined_ocr += "\n" + text
+        combined_ocr = combined_ocr.strip()
+        if combined_ocr:
+            data = parse_passport_data(combined_ocr)
+        else:
+            data = {col: "" for col in EXCEL_COLUMNS[1:]}
+        data_with_num = {"№ п/п": str(person_idx), **data}
+        if combined_ocr and not any(data.values()) and not _is_garbage(combined_ocr):
+            data_with_num["Примечания"] = combined_ocr[:500].replace("\n", " ")
+        results.append(data_with_num)
+        i += 2
+        person_idx += 1
     return results
