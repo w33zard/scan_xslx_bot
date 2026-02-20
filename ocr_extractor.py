@@ -306,16 +306,24 @@ def parse_passport_data(ocr_text: str) -> dict:
             if 2 <= len(v) <= 50 and all(c.isalpha() or c == "-" for c in v):
                 data["Отчество"] = v
     if not data["Фамилия"] or not data["Имя"]:
-        fio_match = re.search(
-            r"([А-ЯЁ][а-яё]{2,})\s+([А-ЯЁ][а-яё]{2,})\s+([А-ЯЁ][а-яё]{2,})",
-            full_text,
-        )
-        if fio_match and (not data["Фамилия"] or not data["Имя"]):
-            data["Фамилия"] = data["Фамилия"] or fio_match.group(1)
-            data["Имя"] = data["Имя"] or fio_match.group(2)
-            data["Отчество"] = data["Отчество"] or fio_match.group(3)
+        # Ищем три слова: Фамилия Имя Отчество (приоритет — если 3-е оканчивается на -вич/-вна)
+        best_fio = None
+        for m in re.finditer(r"([А-ЯЁ][а-яё]{2,})\s+([А-ЯЁ][а-яё]{2,})\s+([А-ЯЁ][а-яё]{2,})", full_text):
+            w3 = m.group(3).lower()
+            if w3.endswith(("вич", "вна")) and m.group(1).lower() not in ("российская", "паспорт"):
+                best_fio = m
+                break
+        if not best_fio:
+            best_fio = re.search(
+                r"([А-ЯЁ][а-яё]{2,})\s+([А-ЯЁ][а-яё]{2,})\s+([А-ЯЁ][а-яё]{2,})",
+                full_text,
+            )
+        if best_fio and (not data["Фамилия"] or not data["Имя"]):
+            data["Фамилия"] = data["Фамилия"] or best_fio.group(1)
+            data["Имя"] = data["Имя"] or best_fio.group(2)
+            data["Отчество"] = data["Отчество"] or best_fio.group(3)
         # Вариант: Имя Отчество (ФЕДОР МИХАЙЛОВИЧ) — ищем пару где второе похоже на отчество
-        skip_words = {"животный", "личный", "код", "цицар", "граждан", "россий", "федера", "паспорт", "адрес", "санкт", "петербург", "отдела", "центральном"}
+        skip_words = {"животный", "личный", "код", "граждан", "россий", "федера", "паспорт", "отдела"}
         if not data["Имя"] or not data["Отчество"]:
             for two_match in re.finditer(r"([А-ЯЁ][а-яё]{2,})\s+([А-ЯЁ][а-яё]{2,})", full_text):
                 w1, w2 = two_match.group(1).lower(), two_match.group(2).lower()
@@ -356,20 +364,38 @@ def parse_passport_data(ocr_text: str) -> dict:
     if data["Место рождения"] and re.match(r"^\d", data["Место рождения"]):
         data["Место рождения"] = ""
 
-    # Адрес — прописка на отдельной странице
-    addr_patterns = [
-        r"(?:место\s+жительства|адрес\s+регистрации|зарегистрирован|прописка|адрес)\s*[:\s]*([А-Яа-яЁё0-9\s,.\-/]+)",
-        r"(?:жительства|проживания)\s*[:\s]*([А-Яа-яЁё0-9\s,.\-/]+)",
-        r"(?:гор\.|город|г\.)\s*([А-Яа-яЁё0-9\s,.\-/]+?)(?=\n|серия|паспорт|$)",
-        r"([А-ЯЁ][а-яё]+ск(ая|ий)\s+обл[а-я]*\.?\s*[,\.\s]+[А-Яа-яЁё0-9\s,.\-]+)",
-    ]
-    for pat in addr_patterns:
-        addr_match = re.search(pat, full_text, re.IGNORECASE | re.DOTALL)
-        if addr_match:
-            val = re.sub(r"\s+", " ", addr_match.group(1).strip())[:300]
-            if len(val) > 5 and not val.replace(" ", "").isdigit():
-                data["Адрес регистрации"] = val
-                break
+    # Адрес — страница прописки: Пункт Гор., Р-н, Улица, Дом, кв
+    addr_parts = []
+    gor = re.search(r"(?:пункт|гор\.?|город)\s*[:\s]*([А-Яа-яЁё\-\s]+?)(?=\n|р-н|улица|дом|$)", full_text, re.I)
+    rn = re.search(r"р-н\s*[:\s]*([А-Яа-яЁё\-]+)", full_text, re.I)
+    ul = re.search(r"(?:улица|ул\.?)\s*[:\s]*([А-Яа-яЁё0-9\s\-]+?)(?=\n|дом|корп|кв|$)", full_text, re.I)
+    dom = re.search(r"дом\s*[:\s]*(\d+[\s\-]*(?:корп\.?\s*[\-\d]*)?)", full_text, re.I)
+    kv = re.search(r"(?:кв\.?|квартира)\s*[:\s]*(\d+)", full_text, re.I)
+    if gor:
+        addr_parts.append("г. " + gor.group(1).strip())
+    if rn:
+        addr_parts.append("р-н " + rn.group(1).strip())
+    if ul:
+        addr_parts.append(ul.group(1).strip())
+    if dom:
+        d = re.sub(r"\s+", " ", dom.group(1).strip())
+        addr_parts.append("д. " + d)
+    if kv:
+        addr_parts.append("кв. " + kv.group(1).strip())
+    if addr_parts:
+        data["Адрес регистрации"] = ", ".join(addr_parts)[:350]
+    if not data["Адрес регистрации"]:
+        addr_patterns = [
+            r"(?:место\s+жительства|адрес\s+регистрации|зарегистрирован)\s*[:\s]*([А-Яа-яЁё0-9\s,.\-/]+)",
+            r"(?:гор\.|город)\s*([А-Яа-яЁё0-9\s,.\-/]+?)(?=р-н|улица|дом|$)",
+        ]
+        for pat in addr_patterns:
+            m = re.search(pat, full_text, re.I | re.DOTALL)
+            if m:
+                val = re.sub(r"\s+", " ", m.group(1).strip())[:300]
+                if len(val) > 5 and not val.replace(" ", "").replace(".", "").isdigit():
+                    data["Адрес регистрации"] = val
+                    break
 
     return data
 
@@ -400,23 +426,26 @@ def _merge_passport_data(base: dict, extra: dict) -> dict:
 
 def process_images_from_folder(folder_path: str) -> list[dict]:
     """
-    Обработать все изображения. Каждые 2 изображения = 1 человек (разворот + прописка).
-    OCR объединяется, чтобы адрес со 2-й страницы попал в строку.
+    Обработка: в каждой подпапке 2 файла (разворот + прописка) = 1 человек.
+    OCR объединяется — адрес с прописки попадёт в строку.
     """
     folder = Path(folder_path)
     image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"}
-    image_files = sorted(
-        [f for f in folder.rglob("*") if f.is_file() and f.suffix.lower() in image_extensions]
-    )
+
+    # Группируем по родительской папке
+    by_parent: dict[Path, list[Path]] = {}
+    for f in folder.rglob("*"):
+        if f.is_file() and f.suffix.lower() in image_extensions:
+            parent = f.parent
+            by_parent.setdefault(parent, []).append(f)
 
     results = []
-    i = 0
     person_idx = 1
-    while i < len(image_files):
-        # Объединяем OCR от 1–2 изображений (основная + прописка)
+    for parent in sorted(by_parent.keys(), key=lambda p: str(p)):
+        images = sorted(by_parent[parent])
         combined_ocr = ""
-        for j in range(min(2, len(image_files) - i)):
-            text = extract_text_from_image(str(image_files[i + j]))
+        for img_path in images:
+            text = extract_text_from_image(str(img_path))
             if text:
                 combined_ocr += "\n" + text
         combined_ocr = combined_ocr.strip()
@@ -428,6 +457,5 @@ def process_images_from_folder(folder_path: str) -> list[dict]:
         if combined_ocr and not any(data.values()) and not _is_garbage(combined_ocr):
             data_with_num["Примечания"] = combined_ocr[:500].replace("\n", " ")
         results.append(data_with_num)
-        i += 2
         person_idx += 1
     return results
