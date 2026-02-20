@@ -18,6 +18,7 @@ FIO_BAN = {
     "зарегистрирован", "рождения", "дата", "выдачи", "место", "федерация",
     "российская", "личный", "граждан", "номер", "серия", "квартира", "корп",
     "обл", "республик", "область", "район", "р-н", "фамилия", "имя", "отчество",
+    "почество",  # OCR часто путает О/П в "Отчество"
 }
 
 
@@ -83,21 +84,24 @@ def parse_passport_data(ocr_text: str) -> dict:
             return False
         if num.startswith(("19", "20")):
             return False
-        if s1 in ("77", "87", "19", "20") or s2 in ("77", "87"):
-            return False
+        if s1 in ("77", "87", "84", "78", "19", "20") or s2 in ("77", "87", "84", "78"):
+            return False  # 84,78 — из кода подразделения 780-084
         return True
 
     series_val = ""
     for txt in (full_norm, full):
-        m = re.search(r"\b(\d{4})[\s\-]?(\d{6})\b", txt)
-        if m:
+        for m in re.finditer(r"\b(\d{4})[\s\-]?(\d{6})\b", txt):
             s, num = m.group(1), m.group(2)
             if not s.startswith(("19", "20")) and valid_series(s[:2], s[2:], num):
                 series_val = f"{s[:2]} {s[2:]} {num}"
                 break
-        m = re.search(r"\b(\d{2})[\s\-]?(\d{2})[\s\-]?(\d{6})\b", txt)
-        if not series_val and m and valid_series(m.group(1), m.group(2), m.group(3)):
-            series_val = f"{m.group(1)} {m.group(2)} {m.group(3)}"
+        if series_val:
+            break
+        for m in re.finditer(r"\b(\d{2})[\s\-]?(\d{2})[\s\-]?(\d{6})\b", txt):
+            if valid_series(m.group(1), m.group(2), m.group(3)):
+                series_val = f"{m.group(1)} {m.group(2)} {m.group(3)}"
+                break
+        if series_val:
             break
     if not series_val:
         digits = re.sub(r"\D", "", full)
@@ -110,17 +114,25 @@ def parse_passport_data(ocr_text: str) -> dict:
     data["Серия и номер паспорта"] = series_val
 
     # --- Даты ---
+    def _norm_date(s):
+        """Нормализация в DD.MM.YYYY"""
+        s = s.replace("-", ".")
+        parts = s.split(".")
+        if len(parts) == 3:
+            d, m, y = parts[0].zfill(2), parts[1].zfill(2), parts[2]
+            return f"{d}.{m}.{y}"
+        return s
+
     birth_m = re.search(r"(?:рождения|дата\s+рождения)[:\s]*(\d{1,2}[.\-]\d{1,2}[.\-]\d{4})", full, re.I)
     issue_m = re.search(r"(?:выдачи|дата\s+выдачи)[:\s]*(\d{1,2}[.\-]\d{1,2}[.\-]\d{4})", full, re.I)
     if birth_m:
-        data["Дата рождения"] = birth_m.group(1).replace("-", ".")
+        data["Дата рождения"] = _norm_date(birth_m.group(1))
     if issue_m:
-        data["Дата выдачи"] = issue_m.group(1).replace("-", ".")
+        data["Дата выдачи"] = _norm_date(issue_m.group(1))
     if not data["Дата рождения"] or not data["Дата выдачи"]:
         dates = re.findall(r"\b(\d{1,2}[.\-]\d{1,2}[.\-]\d{4})\b", full)
         if dates:
-            # Раньше = рождение, позже = выдача
-            parsed = [(d.replace("-", "."), int(d.split(".")[-1]) if "." in d else int(d.split("-")[-1])) for d in dates]
+            parsed = [(_norm_date(d), int(d.split(".")[-1] if "." in d else d.split("-")[-1])) for d in dates]
             parsed.sort(key=lambda x: x[1])
             if not data["Дата рождения"]:
                 data["Дата рождения"] = parsed[0][0]

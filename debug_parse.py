@@ -69,3 +69,12 @@ if __name__ == "__main__":
     assert bad_data.get("Отчество") != "ТП", "Отчество не должно быть ТП"
     assert "77" not in (bad_data.get("Серия и номер паспорта") or ""), "Серия не должна содержать 77 87"
     print("BAD_OCR test: OK")
+
+    # Почество, 84 78, дата без ведущего нуля
+    from ocr_extractor import parse_passport_data
+    ugly = "ФЕДОРФ Почество МИХАЙЛОВИЧ 84 78 008424 40 08 595794 3.04.1987 24.09.2008\nЦИЦАР\nФЕДОР\nМИХАЙЛОВИЧ"
+    u = parse_passport_data(ugly)
+    assert u.get("Имя") != "Почество", "Почество не должно быть Именем"
+    assert "84" not in (u.get("Серия и номер паспорта") or ""), "Серия не 84 78"
+    assert u.get("Дата рождения") == "03.04.1987", f"Дата: {u.get('Дата рождения')}"
+    print("UGLY_OCR test: OK")
