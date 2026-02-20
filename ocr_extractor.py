@@ -65,8 +65,24 @@ def _yandex_vision_ocr(image_path: str) -> str:
 
     try:
         import requests
-        with open(image_path, "rb") as f:
-            content = base64.b64encode(f.read()).decode("utf-8")
+        import tempfile
+
+        img = cv2.imread(image_path)
+        if img is None:
+            return ""
+
+        # Yandex лимит ~1MB — уменьшаем, если больше
+        h, w = img.shape[:2]
+        max_side = 1600
+        for q in [85, 75, 65]:
+            scale = min(1.0, max_side / max(h, w))
+            img_send = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else img
+            _, buf = cv2.imencode(".jpg", img_send, [cv2.IMWRITE_JPEG_QUALITY, q])
+            if len(buf) < 900_000:
+                break
+            max_side = int(max_side * 0.7)
+
+        content = base64.b64encode(buf.tobytes()).decode("utf-8")
 
         url = "https://vision.api.cloud.yandex.net/vision/v1/batchAnalyze"
         headers = {"Authorization": f"Api-Key {api_key}", "Content-Type": "application/json"}
@@ -86,14 +102,16 @@ def _yandex_vision_ocr(image_path: str) -> str:
         texts = []
         for res in data.get("results", []):
             for item in res.get("results", []):
-                ann = item.get("textAnnotation", {})
-                if ann.get("fullText"):
-                    texts.append(ann["fullText"])
-                for block in ann.get("blocks", []):
-                    for line in block.get("lines", []):
-                        line_text = " ".join(w.get("text", "") for w in line.get("words", []))
-                        if line_text:
-                            texts.append(line_text)
+                td = item.get("textDetection") or item.get("textAnnotation") or {}
+                for page in td.get("pages", []):
+                    for block in page.get("blocks", []):
+                        for line in block.get("lines", []):
+                            line_text = line.get("text") or " ".join(w.get("text", "") for w in line.get("words", []))
+                            if line_text:
+                                texts.append(line_text)
+                full = td.get("fullText")
+                if full:
+                    texts.insert(0, full)
         return "\n".join(texts) if texts else ""
     except Exception as e:
         print(f"Yandex Vision error: {e}")
@@ -228,46 +246,80 @@ def parse_passport_data(ocr_text: str) -> dict:
     code_match = re.search(r"\b(\d{3}-\d{3})\b", full_text)
     subdiv_code = code_match.group(1) if code_match else ""
 
-    dob_matches = re.findall(r"\b(\d{2}[.\-]\d{2}[.\-]\d{4})\b", full_text)
-    if dob_matches:
-        data["Дата рождения"] = dob_matches[0].replace("-", ".")
-        if len(dob_matches) > 1:
-            data["Дата выдачи"] = dob_matches[1].replace("-", ".")
+    # Даты: "Дата рождения DD.MM.YYYY" и "Дата выдачи DD.MM.YYYY"
+    dob_match = re.search(r"(?:дата\s+рождения|рождения)[:\s]*(\d{1,2}[.\-]\d{1,2}[.\-]\d{4})", full_text, re.I | re.DOTALL)
+    if dob_match:
+        data["Дата рождения"] = dob_match.group(1).replace("-", ".")
+    vydacha_match = re.search(r"(?:дата\s+выдачи|выдачи)[:\s]*(\d{1,2}[.\-]\d{1,2}[.\-]\d{4})", full_text, re.I | re.DOTALL)
+    if vydacha_match:
+        data["Дата выдачи"] = vydacha_match.group(1).replace("-", ".")
+    if not data["Дата рождения"] and not data["Дата выдачи"]:
+        dob_matches = re.findall(r"\b(\d{1,2}[.\-]\d{1,2}[.\-]\d{4})\b", full_text)
+        if dob_matches:
+            data["Дата рождения"] = dob_matches[0].replace("-", ".")
+            if len(dob_matches) > 1:
+                data["Дата выдачи"] = dob_matches[1].replace("-", ".")
 
-    # ФИО — три слова кириллицей (российский паспорт)
-    fio_match = re.search(
-        r"([А-ЯЁ][а-яё]{2,})\s+([А-ЯЁ][а-яё]{2,})\s+([А-ЯЁ][а-яё]{2,})",
-        full_text,
-    )
-    if fio_match:
-        data["Фамилия"] = fio_match.group(1)
-        data["Имя"] = fio_match.group(2)
-        data["Отчество"] = fio_match.group(3)
+    # ФИО — после метки "Фамилия" или три слова кириллицей подряд
+    fam_match = re.search(r"Фамилия\s*[.\s]+([А-ЯЁ][а-яё\-]+)", full_text, re.I)
+    im_match = re.search(r"Имя\s*[.\s]+([А-ЯЁ][а-яё\-]+)", full_text, re.I)
+    otch_match = re.search(r"(?:Отчество|ОТЧЕСТВО)\s*[.\s]+([А-ЯЁ][а-яё\-]+)", full_text, re.I)
+    if fam_match:
+        data["Фамилия"] = fam_match.group(1).strip()
+    if im_match:
+        data["Имя"] = im_match.group(1).strip()
+    if otch_match:
+        data["Отчество"] = otch_match.group(1).strip()
+    if not data["Фамилия"] or not data["Имя"]:
+        fio_match = re.search(
+            r"([А-ЯЁ][а-яё]{2,})\s+([А-ЯЁ][а-яё]{2,})\s+([А-ЯЁ][а-яё]{2,})",
+            full_text,
+        )
+        if fio_match and (not data["Фамилия"] or not data["Имя"]):
+            data["Фамилия"] = data["Фамилия"] or fio_match.group(1)
+            data["Имя"] = data["Имя"] or fio_match.group(2)
+            data["Отчество"] = data["Отчество"] or fio_match.group(3)
+        # Вариант: Имя Отчество (ФЕДОР МИХАЙЛОВИЧ) — ищем пару где второе похоже на отчество
+        skip_words = {"животный", "личный", "код", "цицар", "граждан", "россий", "федера", "паспорт", "адрес", "санкт", "петербург", "отдела", "центральном"}
+        if not data["Имя"] or not data["Отчество"]:
+            for two_match in re.finditer(r"([А-ЯЁ][а-яё]{2,})\s+([А-ЯЁ][а-яё]{2,})", full_text):
+                w1, w2 = two_match.group(1).lower(), two_match.group(2).lower()
+                if w1 not in skip_words and w2 not in skip_words and len(w2) >= 4 and w2[-2:] in ("вич", "вна", "ова", "ев", "ин", "ич"):
+                    data["Имя"] = data["Имя"] or two_match.group(1)
+                    data["Отчество"] = data["Отчество"] or two_match.group(2)
+                    break
 
     # ИНН — только 12 цифр (физлицо), не путать с серией паспорта (10 цифр)
     inn_match = re.search(r"\b(\d{12})\b", full_text)
     if inn_match:
         data["ИНН"] = inn_match.group(1)
 
-    # Кем выдан - ищем после "выдан" или код подразделения
+    # Кем выдан — текст между "Паспорт выдан"/"выдан" и "Дата выдачи" или кодом XXX-XXX
     issued_match = re.search(
-        r"(?:кем выдан|выдан|Кем выдан)\s*[:]?\s*([А-Яа-яЁё0-9\s,.\-]+?)(?=\d{3}-\d{3}|\n\n|$)",
+        r"(?:паспорт\s+выдан|кем\s+выдан|выдан)\s*[:\s]*([А-Яа-яЁё0-9№\s,.\-/]+?)(?=\d{3}-\d{3}|дата\s+выдачи|код\s+подразделения|$)",
         full_text,
         re.IGNORECASE | re.DOTALL,
     )
     if issued_match:
-        data["Кем выдан"] = issued_match.group(1).strip()[:200]
+        data["Кем выдан"] = re.sub(r"\s+", " ", issued_match.group(1).strip())[:250]
+        if subdiv_code and subdiv_code not in data["Кем выдан"]:
+            data["Кем выдан"] = (data["Кем выдан"] + " " + subdiv_code).strip()
     elif subdiv_code:
         data["Кем выдан"] = subdiv_code
 
-    # Место рождения
+    # Место рождения — "ГОР. ЛЕНИНГРАД" или после "Место рождения"
     birth_place_match = re.search(
-        r"(?:место рождения|Место рождения)\s*[:]?\s*([А-Яа-яЁё0-9\s,.\-]+?)(?=\d{2}\.\d{2}\.\d{4}|\n\n|серия|паспорт)",
+        r"(?:место рождения|Место рождения)[:\s]*([А-Яа-яЁёA-Za-z\s,.\-]+?)(?=\d{1,2}[.\-]\d|серия|паспорт|$)",
         full_text,
         re.IGNORECASE | re.DOTALL,
     )
     if birth_place_match:
-        data["Место рождения"] = birth_place_match.group(1).strip()[:150]
+        data["Место рождения"] = re.sub(r"\s+", " ", birth_place_match.group(1).strip())[:150]
+    gor_match = re.search(r"ГОР\.\s*([А-Яа-яЁёA-Za-z\s\-]+?)(?=\d{1,2}\.\d|595|\n\n|$)", full_text)
+    if gor_match and not data["Место рождения"]:
+        data["Место рождения"] = ("гор. " + gor_match.group(1).strip()).strip()[:150]
+    if data["Место рождения"] and re.match(r"^\d", data["Место рождения"]):
+        data["Место рождения"] = ""
 
     # Адрес - часто в конце
     addr_match = re.search(
