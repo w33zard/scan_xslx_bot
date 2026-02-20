@@ -95,6 +95,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             template = os.environ.get("TEMPLATE_EXCEL")
             create_excel(results, output_path, template_excel=template)
 
+            empty_count = sum(1 for r in results if not r.get("Фамилия") and not r.get("Серия и номер паспорта"))
+            if empty_count == len(results) and results:
+                await update.message.reply_text(
+                    "⚠️ OCR не распознал данные ни в одном паспорте. "
+                    "Проверьте: 1) YANDEX_VISION_API_KEY в .env 2) чёткость фото, освещение. "
+                    "Команда /test — проверить парсинг."
+                )
             await update.message.reply_text(
                 f"✅ Обработано паспортов: {len(results)}"
             )
@@ -156,6 +163,12 @@ async def process_ready(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 pass
 
     context.user_data["pending_photos"] = []
+
+    empty_count = sum(1 for r in results if not r.get("Фамилия") and not r.get("Серия и номер паспорта"))
+    if empty_count == len(results) and results:
+        await update.message.reply_text(
+            "⚠️ OCR не распознал данные. Проверьте YANDEX_VISION_API_KEY и качество фото. /test — проверить парсинг."
+        )
 
     output_path = os.path.join(tempfile.gettempdir(), "passports_data.xlsx")
     template = os.environ.get("TEMPLATE_EXCEL")

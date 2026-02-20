@@ -169,6 +169,18 @@ def _yandex_vision_ocr(image_path: str) -> str:
     try:
         import requests
 
+        def _collect_all_text(obj, out: list):
+            """Рекурсивно собрать все строки с кириллицей/цифрами из JSON"""
+            if isinstance(obj, str) and len(obj) > 2:
+                if re.search(r"[А-Яа-яЁё0-9]", obj):
+                    out.append(obj.strip())
+            elif isinstance(obj, dict):
+                for v in obj.values():
+                    _collect_all_text(v, out)
+            elif isinstance(obj, list):
+                for v in obj:
+                    _collect_all_text(v, out)
+
         def _extract_from_response(data) -> str:
             texts = []
             full_yt = ""
@@ -176,7 +188,9 @@ def _yandex_vision_ocr(image_path: str) -> str:
             if not isinstance(results, list):
                 results = [results] if results else []
             if not results and data.get("error"):
-                return ""
+                fallback = []
+                _collect_all_text(data, fallback)
+                return "\n".join(fallback[:200]) if fallback else ""
             for res in results:
                 if not isinstance(res, dict):
                     continue
@@ -206,6 +220,10 @@ def _yandex_vision_ocr(image_path: str) -> str:
                                     texts.append(str(lt).strip())
             lines_str = "\n".join(texts) if texts else ""
             out = (full_yt + "\n" + lines_str).strip() if full_yt and lines_str else (full_yt or lines_str)
+            if not out:
+                fallback = []
+                _collect_all_text(data, fallback)
+                out = "\n".join(fallback[:200]) if fallback else ""
             return out
 
         # Вариант 1: сырой файл (JPEG/PNG) — без перекодировки
@@ -223,7 +241,14 @@ def _yandex_vision_ocr(image_path: str) -> str:
         if not content:
             img = cv2.imread(image_path)
             if img is None:
-                return ""
+                try:
+                    from PIL import Image
+                    import numpy as np
+                    pil_img = Image.open(image_path).convert("RGB")
+                    img = np.array(pil_img)
+                    img = img[:, :, ::-1].copy()
+                except Exception:
+                    return ""
             h, w = img.shape[:2]
             max_side = 1600
             for q in [90, 85, 75, 65]:
