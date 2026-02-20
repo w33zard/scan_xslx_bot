@@ -39,7 +39,7 @@ echo ""
 echo "3. Python venv:"
 if [ -f venv/bin/python ]; then
     echo "   ✅ venv есть"
-    venv/bin/pip list | grep -E "telegram|tesseract|opencv|numpy" 2>/dev/null | head -5 || echo "   (проверьте: venv/bin/pip list)"
+    venv/bin/python -c "import telegram, pytesseract, cv2" 2>/dev/null && echo "   ✅ Основные пакеты OK" || echo "   ⚠️  Проверьте: venv/bin/pip list"
 else
     echo "   ❌ venv НЕ НАЙДЕН"
     echo "   Создайте: python3 -m venv venv && venv/bin/pip install -r requirements.txt"

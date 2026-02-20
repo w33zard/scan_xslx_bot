@@ -13,7 +13,8 @@ apt-get update -qq
 apt-get install -y tesseract-ocr tesseract-ocr-rus tesseract-ocr-eng 2>/dev/null || true
 
 echo "==> 3. venv и зависимости..."
-if [ ! -d venv ]; then
+if [ ! -d venv ] || [ ! -f venv/bin/pip ]; then
+    rm -rf venv
     python3 -m venv venv
 fi
 ./venv/bin/pip install -q -r requirements.txt
