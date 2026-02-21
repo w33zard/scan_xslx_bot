@@ -49,7 +49,12 @@ def main():
             "📖 /start — это сообщение"
         )
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .drop_pending_updates(True)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("diagnose", cmd_diagnose))
