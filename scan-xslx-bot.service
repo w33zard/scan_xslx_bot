@@ -7,7 +7,7 @@ Type=simple
 User=root
 WorkingDirectory=/opt/scan_xslx_bot
 EnvironmentFile=/opt/scan_xslx_bot/.env
-ExecStart=/opt/scan_xslx_bot/venv/bin/python /opt/scan_xslx_bot/bot.py
+ExecStart=/opt/scan_xslx_bot/venv/bin/python /opt/scan_xslx_bot/main.py
 Restart=always
 RestartSec=5
 

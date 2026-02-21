@@ -4,4 +4,4 @@ set -a
 [ -f .env ] && . ./.env
 set +a
 . venv/bin/activate
-exec python bot.py
+exec python main.py

@@ -1,48 +1,97 @@
-# Telegram-бот: извлечение данных из сканов паспортов
+# Telegram-бот: извлечение данных из паспортов РФ
 
-Бот принимает ZIP-архив или фото паспортов и возвращает Excel-файл с извлечёнными данными.
+Бот принимает изображение/скан/PDF или ZIP-архив паспортов и возвращает **структурированный JSON** + Excel.
+
+## Структура проекта
+
+```
+project/
+  main.py                 # Точка входа
+  bot/
+    handlers.py           # document, photo, /ready, /ocr_raw
+    config.py             # .env
+    utils_files.py
+  passport_ocr/
+    pipeline.py           # Главный пайплайн
+    ingest.py             # Приём, нормализация (PDF → images)
+    preprocess.py         # Deskew, document detection, enhance
+    classify.py           # main_spread / registration
+    detect.py             # Серия/номер из вертикальной полосы
+    ocr_engines/          # Paddle, Tesseract, EasyOCR, Yandex
+    parse.py              # Извлечение полей
+    validate.py           # Валидация форматов
+    schemas.py            # PassportResult, FieldValue
+  ml/
+    README_TRAINING.md    # План обучения
+    augmentations.py
+    infer.py
+  tests/
+  requirements.txt
+  .env.example
+```
 
 ## Установка
 
 ### 1. Tesseract OCR
 
-Скачайте и установите Tesseract с поддержкой русского:
-- Windows: https://github.com/UB-Mannheim/tesseract/wiki
-- При установке отметьте языковые пакеты `Russian` и `English`
+- **Linux**: `apt-get install tesseract-ocr tesseract-ocr-rus tesseract-ocr-eng`
+- **Windows**: [tesseract/wiki](https://github.com/UB-Mannheim/tesseract/wiki) — выберите русский и английский
 
-### 2. Зависимости Python
+### 2. Зависимости
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Токен бота и Yandex Vision (рекомендуется)
+### 3. .env
 
-1. Создайте бота в [@BotFather](https://t.me/BotFather)
-2. Для **полного распознавания** паспортов добавьте Yandex Vision API:
-   - [Yandex Cloud Console](https://console.cloud.yandex.ru/) → Vision → API-ключ
-   - Бесплатно: 1000 запросов/мес
-3. В `.env` укажите:
-   - `TELEGRAM_BOT_TOKEN` — токен от BotFather
-   - `YANDEX_VISION_API_KEY` — ключ Yandex Vision (для полного распознавания паспортов)
+Скопируйте `.env.example` в `.env` и укажите:
+
+- `TELEGRAM_BOT_TOKEN`
+- `ADMIN_IDS` (через запятую)
+- `OCR_ENGINE` — tesseract | yandex | easyocr | paddle
+- `YANDEX_VISION_API_KEY` — при OCR_ENGINE=yandex
 
 ## Запуск
 
 ```bash
-python bot.py
+python main.py
 ```
+
+Или через run.sh / Docker.
 
 ## Использование
 
-1. **ZIP-архив** — отправьте боту ZIP с изображениями паспортов (.jpg, .png и т.д.)
-2. **Фото** — отправьте несколько фото паспортов, затем команду `/готово`
+1. **Фото** — отправьте фото паспорта (или несколько), затем `/ready`
+2. **Документ** — отправьте JPG/PNG/PDF (один файл)
+3. **ZIP** — архив с изображениями → Excel + JSON
 
-Бот вернёт Excel с колонками:
-- № п/п, Фамилия, Имя, Отчество
-- Дата рождения, Место рождения
-- Серия и номер паспорта, Дата выдачи, Кем выдан
-- ИНН, Адрес регистрации, Примечания
+Бот вернёт краткое резюме полей + **JSON-файл** и при необходимости Excel.
 
-## Формат Excel
+## Формат JSON
 
-Если нужен другой набор колонок, измените `EXCEL_COLUMNS` в `ocr_extractor.py` и парсинг в `parse_passport_data()`.
+```json
+{
+  "doc_type": "passport_rf_internal",
+  "page_type": "main_spread",
+  "fields": {
+    "surname": {"value": "ИВАНОВ", "confidence": 0.9, "source": "ocr"},
+    "name": {"value": "ПЕТР", "confidence": 0.9, "source": "ocr"},
+    "passport_series": {"value": "4008", "confidence": 0.85, "source": "ocr"},
+    "passport_number": {"value": "595794", "confidence": 0.85, "source": "ocr"}
+  },
+  "checks": {...},
+  "errors": [],
+  "debug": {...}
+}
+```
+
+## Тесты
+
+```bash
+python -m pytest tests/ -v
+```
+
+## Обучение
+
+См. `ml/README_TRAINING.md` — план дообучения OCR и NER на паспортах РФ.

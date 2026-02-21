@@ -1,0 +1,16 @@
+---
+description: После изменений в коде — всегда деплоить на сервер
+alwaysApply: true
+---
+
+# Деплой
+
+После любых изменений в коде бота (handlers, ocr_extractor, excel_export, passport_ocr и т.д.) **всегда** выполняй деплой:
+
+1. **Git commit и push** — если есть несохранённые изменения
+2. **Запуск деплоя** — один из вариантов:
+   - `git push` → GitHub Actions сам задеплоит (если настроены секреты)
+   - `ssh root@194.67.88.36 "cd /opt/scan_xslx_bot && bash scripts/deploy_full.sh"`
+   - Или `scripts/restart.sh` — если только перезапуск
+
+Не спрашивай разрешения на деплой — делай его сразу после изменений.

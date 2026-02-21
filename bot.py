@@ -4,6 +4,10 @@ Telegram-бот для извлечения данных из сканов па�
 """
 import asyncio
 import os
+import sys
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 import shutil
 import tempfile
 import zipfile
@@ -127,64 +131,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @admin_only
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработка ZIP-архива"""
-    document = update.message.document
-    if not document.file_name.lower().endswith(".zip"):
-        await update.message.reply_text(
-            "⚠️ Пожалуйста, отправьте ZIP-архив с изображениями паспортов."
-        )
-        return
-
-    await update.message.reply_text("📥 Получаю архив...")
-
-    try:
-        file = await context.bot.get_file(document.file_id)
-        zip_path = os.path.join(tempfile.gettempdir(), f"passports_{document.file_unique_id}.zip")
-        await file.download_to_drive(zip_path)
-
-        extract_dir = tempfile.mkdtemp()
-        try:
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(extract_dir)
-
-            await update.message.reply_text("🔍 Обрабатываю изображения (OCR)...")
-
-            results = process_images_from_folder(extract_dir)
-
-            if not results:
-                await update.message.reply_text(
-                    "❌ В архиве не найдено изображений (jpg, png, bmp, tiff)."
-                )
-                return
-
-            output_path = os.path.join(tempfile.gettempdir(), "passports_data.xlsx")
-            template = os.environ.get("TEMPLATE_EXCEL")
-            create_excel(results, output_path, template_excel=template)
-
-            empty_count = sum(1 for r in results if not r.get("Фамилия") and not r.get("Серия и номер паспорта"))
-            if empty_count == len(results) and results:
-                await update.message.reply_text(
-                    "⚠️ OCR не распознал данные ни в одном паспорте. "
-                    "Проверьте: 1) YANDEX_VISION_API_KEY в .env 2) чёткость фото, освещение. "
-                    "Команда /test — проверить парсинг."
-                )
-            await update.message.reply_text(
-                f"✅ Обработано паспортов: {len(results)}"
-            )
-            with open(output_path, "rb") as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename="passports_data.xlsx",
-                )
-            os.unlink(output_path)
-        finally:
-            shutil.rmtree(extract_dir, ignore_errors=True)
-        os.unlink(zip_path)
-
-    except zipfile.BadZipFile:
-        await update.message.reply_text("❌ Ошибка: повреждённый ZIP-архив.")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+    """Обработка ZIP — делегируем в bot.handlers для единой логики"""
+    from bot.handlers import handle_document as _hd
+    await _hd(update, context)
 
 
 @admin_only
@@ -237,7 +186,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 @admin_only
 async def process_ready(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработка накопленных фото по команде /готово"""
+    """Обработка накопленных фото: несколько фото = один паспорт (разворот + прописка), объединённый OCR."""
     photos = context.user_data.get("pending_photos", [])
     if not photos:
         await update.message.reply_text(
@@ -247,30 +196,42 @@ async def process_ready(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     await update.message.reply_text("🔍 Обрабатываю изображения (OCR)...")
 
-    results = []
-    for i, path in enumerate(photos, 1):
-        try:
-            row = process_passport_image(path, index=i)
-            results.append(row)
-        finally:
+    folder = tempfile.mkdtemp()
+    try:
+        for i, p in enumerate(photos):
+            dst = Path(folder) / f"page_{i}{Path(p).suffix or '.jpg'}"
+            if Path(p).exists():
+                shutil.copy(p, dst)
+        results = process_images_from_folder(folder)
+    except Exception as e:
+        results = []
+        import logging
+        logging.getLogger(__name__).exception("process_ready error")
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+        for p in photos:
             try:
-                os.unlink(path)
+                os.unlink(p)
             except Exception:
                 pass
 
     context.user_data["pending_photos"] = []
 
+    if not results:
+        await update.message.reply_text("❌ Не удалось обработать изображения.")
+        return
+
     empty_count = sum(1 for r in results if not r.get("Фамилия") and not r.get("Серия и номер паспорта"))
     if empty_count == len(results) and results:
         await update.message.reply_text(
-            "⚠️ OCR не распознал данные. Проверьте YANDEX_VISION_API_KEY и качество фото. /test — проверить парсинг."
+            "⚠️ OCR не распознал данные. Попробуйте /diagnose или пришлите лучшее качество фото."
         )
 
     output_path = os.path.join(tempfile.gettempdir(), "passports_data.xlsx")
     template = os.environ.get("TEMPLATE_EXCEL")
     create_excel(results, output_path, template_excel=template)
 
-    await update.message.reply_text(f"✅ Обработано паспортов: {len(results)}")
+    await update.message.reply_text(f"✅ Обработано: {len(results)}")
     with open(output_path, "rb") as f:
         await update.message.reply_document(
             document=f,

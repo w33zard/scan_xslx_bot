@@ -10,6 +10,70 @@ from openpyxl.utils import get_column_letter
 
 from ocr_extractor import EXCEL_COLUMNS
 
+# Маппинг полей PassportResult (passport_ocr) → Excel
+_PASSPORT_RESULT_TO_EXCEL = {
+    "surname": "Фамилия",
+    "name": "Имя",
+    "patronymic": "Отчество",
+    "birth_date": "Дата рождения",
+    "birth_place": "Место рождения",
+    "passport_series": None,  # объединяем с passport_number
+    "passport_number": None,
+    "issue_date": "Дата выдачи",
+    "issue_place": "Кем выдан",
+    "registration_address": "Адрес регистрации",
+    "authority_code": None,
+}
+
+
+def _normalize_row(row: dict) -> dict:
+    """
+    Привести строку к плоскому формату Excel.
+    Если пришёл PassportResult (doc_type, fields) — преобразовать.
+    """
+    if not isinstance(row, dict):
+        return {}
+    if "doc_type" not in row or "fields" not in row:
+        return row
+
+    fields = row.get("fields") or {}
+    flat = {"№ п/п": row.get("№ п/п") or ""}
+
+    def _val(key: str) -> str:
+        f = fields.get(key)
+        if f is None:
+            return ""
+        v = f.get("value") if isinstance(f, dict) else getattr(f, "value", None)
+        return (v or "").strip()
+
+    for fkey, col in _PASSPORT_RESULT_TO_EXCEL.items():
+        if col:
+            flat[col] = _val(fkey)
+
+    s4, n6 = _val("passport_series"), _val("passport_number")
+    if s4 and n6:
+        flat["Серия и номер паспорта"] = f"{s4} {n6}".strip()
+    elif s4 or n6:
+        flat["Серия и номер паспорта"] = (s4 or n6).strip()
+
+    for col in EXCEL_COLUMNS:
+        if col not in flat:
+            flat[col] = row.get(col, "")
+    return flat
+
+
+def normalize_results(data: list[dict]) -> list[dict]:
+    """Привести список строк к плоскому формату Excel (если был PassportResult)."""
+    if not data:
+        return []
+    out = []
+    for i, r in enumerate(data, 1):
+        row = _normalize_row(r)
+        if not row.get("№ п/п"):
+            row["№ п/п"] = str(i)
+        out.append(row)
+    return out
+
 
 def _get_columns_from_template(template_path: str) -> list[str] | None:
     """Загрузить заголовки колонок из эталонного Excel"""
@@ -33,6 +97,7 @@ def create_excel(
     """
     Создать Excel-файл с данными паспортов в формате как в эталоне
     """
+    data = normalize_results(data)
     columns = _get_columns_from_template(template_excel) if template_excel else None
     columns = columns or EXCEL_COLUMNS
 
@@ -46,7 +111,7 @@ def create_excel(
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal="center", wrap_text=True)
 
-    # Данные
+    # Данные (data уже нормализован через normalize_results)
     for row_idx, row_data in enumerate(data, start=2):
         for col_idx, col_name in enumerate(columns, 1):
             value = row_data.get(col_name, "")

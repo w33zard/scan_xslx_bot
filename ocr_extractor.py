@@ -83,16 +83,17 @@ def _extract_series_from_vertical_red(image_path: str) -> str:
     ]
 
     def _try_ocr(roi_img, rotate=True, psm=6):
+        """OCR только цифр. Серия=4 цифры, номер=6. Исключаем только 19xx/20xx (год)."""
         try:
             img_use = cv2.rotate(roi_img, cv2.ROTATE_90_CLOCKWISE) if rotate else roi_img
             img_use = cv2.resize(img_use, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
             text = pytesseract.image_to_string(img_use, config=f"--psm {psm} -c tessedit_char_whitelist=0123456789 ")
             digits = re.sub(r"\D", "", text)
-            if len(digits) == 10:
+            if len(digits) == 10 and not digits[:4].startswith(("19", "20")):
                 return f"{digits[:2]} {digits[2:4]} {digits[4:]}"
             for i in range(max(0, len(digits) - 9)):
                 chunk = digits[i : i + 10]
-                if chunk[:2] not in ("19", "20") and chunk[2:4] not in ("19", "20"):
+                if not chunk[:4].startswith(("19", "20")):  # серия не год
                     return f"{chunk[:2]} {chunk[2:4]} {chunk[4:]}"
         except Exception:
             pass
@@ -123,10 +124,10 @@ def _extract_series_from_vertical_red(image_path: str) -> str:
             return res
         return _try_ocr(binary2)
 
-    # ROI: правая и левая стороны (сканы могут быть зеркальными)
+    # ROI: вертикальная полоса справа — там серия и номер (4+6 цифр) в паспорте РФ
     for rot_img, _ in rots:
         rw = rot_img.shape[1]
-        for frac in (0.70, 0.75, 0.80, 0.85):
+        for frac in (0.88, 0.85, 0.80, 0.75, 0.70):  # сначала самая правая часть
             x0 = int(rw * frac)
             roi = rot_img[:, x0:].copy()
             if roi.size > 0:
@@ -150,7 +151,7 @@ def _extract_series_from_vertical_red(image_path: str) -> str:
             digits = re.sub(r"\D", "", txt)
             for i in range(len(digits) - 9):
                 chunk = digits[i : i + 10]
-                if chunk[:2] not in ("19", "20") and chunk[2:4] not in ("19", "20"):
+                if not chunk[:4].startswith(("19", "20")):
                     return f"{chunk[:2]} {chunk[2:4]} {chunk[4:]}"
         except Exception:
             pass
@@ -318,7 +319,6 @@ def extract_text_from_image(image_path: str) -> str:
     """
     try:
         text = ""
-        # Сначала Yandex Vision, если есть ключ
         text = _yandex_vision_ocr(image_path)
         if text and os.environ.get("DEBUG_OCR"):
             debug_path = Path(image_path).with_suffix(".ocr.txt")
@@ -328,7 +328,11 @@ def extract_text_from_image(image_path: str) -> str:
             except Exception:
                 print(f"[DEBUG_OCR] {image_path}:\n---\n{text[:500]}...\n---")
         if text:
-            return _append_vertical_series(image_path, text.strip())
+            txt = text.strip()
+            parsed = parse_passport_data(txt)
+            score = sum(1 for k in ("Фамилия", "Имя", "Отчество", "Серия и номер паспорта") if parsed.get(k))
+            if score >= 2:
+                return _append_vertical_series(image_path, txt)
 
         img = cv2.imread(image_path)
         if img is None:
@@ -337,31 +341,39 @@ def extract_text_from_image(image_path: str) -> str:
         gray_full = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         gray_crop = _crop_center(gray_full)
         preprocessed = preprocess_image(image_path)
-        # Сначала полное изображение — обрезка/предобработка может терять текст
         variants = [
             (gray_full, "full"),
             (gray_crop, "cropped"),
             (preprocessed, "preprocessed"),
         ]
-        # Сканы могут быть перевёрнуты — добавляем повёрнутые варианты
         for rot in [cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE]:
             g = cv2.cvtColor(cv2.rotate(img, rot), cv2.COLOR_BGR2GRAY)
             variants.append((g, "rotated"))
 
+        best_text = ""
+        best_score = -1
         for img_use, _ in variants:
             if img_use is None:
                 continue
-            for psm in [11, 6, 4, 3]:  # 11=sparse text
+            for psm in [11, 6, 4, 3]:
                 for lang in ["rus+eng", "rus"]:
                     try:
                         config = f"--psm {psm} -c preserve_interword_spaces=1"
                         text = pytesseract.image_to_string(img_use, lang=lang, config=config)
                         if text and text.strip():
-                            return _append_vertical_series(image_path, text.strip())
+                            txt = text.strip()
+                            parsed = parse_passport_data(txt)
+                            score = sum(1 for k in ("Фамилия", "Имя", "Отчество", "Серия и номер паспорта") if parsed.get(k))
+                            if score > best_score:
+                                best_score = score
+                                best_text = txt
+                            if best_score >= 3:
+                                return _append_vertical_series(image_path, best_text)
                     except Exception:
                         continue
+        if best_text:
+            return _append_vertical_series(image_path, best_text)
 
-        # image_to_data — только высокий conf
         last_img = preprocessed if preprocessed is not None else gray_crop
         try:
             d = pytesseract.image_to_data(last_img, lang="rus+eng", output_type=pytesseract.Output.DICT)
@@ -386,18 +398,19 @@ def extract_text_from_image(image_path: str) -> str:
 
 def process_passport_image(image_path: str, index: int = 1) -> dict:
     """
-    Обработать одно изображение паспорта и вернуть данные для Excel
+    Обработать одно изображение паспорта и вернуть данные для Excel.
+    Серия/номер: приоритет у вертикальной полосы справа (там печатают в паспорте).
     """
     ocr_text = extract_text_from_image(image_path)
     data = parse_passport_data(ocr_text)
-    if not data["Серия и номер паспорта"]:
-        data["Серия и номер паспорта"] = _extract_series_from_vertical_red(image_path)
+    vert_series = _extract_series_from_vertical_red(image_path)
+    if vert_series:
+        data["Серия и номер паспорта"] = vert_series
     # Сохраняем OCR для отладки
     _bad = (
         (not data["Фамилия"] or not data["Серия и номер паспорта"]) or
         (data.get("Имя") or "").lower() in ("выдан", "тп") or
-        (data.get("Отчество") or "").lower() in ("выдан", "тп") or
-        ("77 87" in (data.get("Серия и номер паспорта") or ""))
+        (data.get("Отчество") or "").lower() in ("выдан", "тп")
     )
     if _bad and ocr_text:
         import tempfile
@@ -439,20 +452,18 @@ def _process_one_person(parent: Path, images: list[Path], person_idx: int) -> di
         data = parse_passport_data(combined_ocr)
     else:
         data = {col: "" for col in EXCEL_COLUMNS[1:]}
-    if not data["Серия и номер паспорта"]:
-        for img_path in images:
-            s = _extract_series_from_vertical_red(str(img_path))
-            if s:
-                data["Серия и номер паспорта"] = s
-                break
+    for img_path in images:
+        s = _extract_series_from_vertical_red(str(img_path))
+        if s:
+            data["Серия и номер паспорта"] = s
+            break
     data_with_num = {"№ п/п": str(person_idx), **data}
     if combined_ocr and not any(data.values()):
         data_with_num["Примечания"] = combined_ocr[:500].replace("\n", " ")
     _bad = (
         (not data["Фамилия"] or not data["Серия и номер паспорта"]) or
         (data.get("Имя") or "").lower() in ("выдан", "тп") or
-        (data.get("Отчество") or "").lower() in ("выдан", "тп") or
-        ("77 87" in (data.get("Серия и номер паспорта") or ""))
+        (data.get("Отчество") or "").lower() in ("выдан", "тп")
     )
     if _bad and combined_ocr:
         import tempfile
