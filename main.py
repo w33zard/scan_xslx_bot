@@ -15,7 +15,7 @@ except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 from bot.config import TELEGRAM_BOT_TOKEN, LOG_LEVEL
-from bot.handlers import handle_document, handle_photo, cmd_ocr_raw, process_ready
+from bot.handlers import handle_document, handle_photo, cmd_ocr_raw, cmd_diagnose, process_ready
 
 
 def setup_logging():
@@ -44,6 +44,7 @@ def main():
             "👋 Бот для извлечения данных из паспортов РФ.\n\n"
             "📤 Отправьте фото/скан паспорта или ZIP с изображениями.\n"
             "📋 Получите JSON + Excel с полями: ФИО, даты, серия/номер, адрес и т.д.\n\n"
+            "🔧 /diagnose — проверка OCR\n"
             "🔧 /ocr_raw — отладка (сырой OCR)\n"
             "📖 /start — это сообщение"
         )
@@ -51,6 +52,7 @@ def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("diagnose", cmd_diagnose))
     app.add_handler(CommandHandler("ocr_raw", cmd_ocr_raw))
     app.add_handler(CommandHandler("ready", process_ready))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))

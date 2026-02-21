@@ -25,10 +25,16 @@ if [ ! -f .env ]; then
     echo "⚠️  Отредактируйте .env: nano /opt/scan_xslx_bot/.env"
 fi
 
-echo "==> 5. Перезапуск..."
+echo "==> 5. Systemd unit..."
+cp -f scan-xslx-bot.service /etc/systemd/system/
+systemctl daemon-reload
+
+echo "==> 6. Перезапуск (один экземпляр — остановить дубликаты)..."
+pkill -f 'scan_xslx_bot.*python' 2>/dev/null || true
+sleep 2
 systemctl restart scan-xslx-bot
 
-echo "==> 6. Статус..."
+echo "==> 7. Статус..."
 sleep 2
 systemctl status scan-xslx-bot --no-pager | head -5
 

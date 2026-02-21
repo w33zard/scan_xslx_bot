@@ -249,6 +249,57 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 @admin_only
+async def cmd_diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Диагностика: Yandex, Tesseract, OCR"""
+    import os
+    import tempfile
+    lines = []
+    key = os.environ.get("YANDEX_VISION_API_KEY", "")
+    lines.append(f"1. Yandex API: {'✅ ключ есть' if key else '❌ ключ НЕ задан'}")
+    try:
+        import pytesseract
+        v = pytesseract.get_tesseract_version()
+        lines.append(f"2. Tesseract: ✅ {v}")
+    except Exception as e:
+        lines.append(f"2. Tesseract: ❌ {e}")
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        img = Image.new("RGB", (800, 300), "white")
+        draw = ImageDraw.Draw(img)
+        font = None
+        for fp in ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "C:/Windows/Fonts/arial.ttf"]:
+            if os.path.isfile(fp):
+                try:
+                    font = ImageFont.truetype(fp, 36)
+                    break
+                except Exception:
+                    pass
+        if font:
+            draw.text((30, 80), "ЦИЦАР ФЕДОР МИХАЙЛОВИЧ", fill="black", font=font)
+            draw.text((30, 140), "4008 595794", fill="black", font=font)
+        else:
+            draw.text((30, 80), "ЦИЦАР ФЕДОР 4008 595794", fill="black")
+        path = os.path.join(tempfile.gettempdir(), "diag_test.jpg")
+        img.save(path, "JPEG", quality=95)
+        from ocr_extractor import extract_text_from_image, parse_passport_data
+        ocr = extract_text_from_image(path)
+        lines.append(f"3. OCR: {len(ocr)} симв.")
+        if ocr:
+            lines.append(f"   Текст: {ocr[:120]}...")
+        else:
+            lines.append("   ❌ OCR пустой")
+        data = parse_passport_data(ocr or "")
+        lines.append(f"4. Парсинг: ФИО={bool(data.get('Фамилия'))}, Серия={data.get('Серия и номер паспорта') or 'пусто'}")
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
+    except Exception as e:
+        lines.append(f"3-4. Ошибка: {e}")
+    await update.message.reply_text("🔍 Диагностика:\n\n" + "\n".join(lines))
+
+
+@admin_only
 async def cmd_ocr_raw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Включить режим отладки OCR для следующего фото"""
     context.user_data["next_photo_ocr_debug"] = True
