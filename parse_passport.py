@@ -11,8 +11,34 @@ EXCEL_COLUMNS = [
     "Адрес регистрации", "Примечания",
 ]
 
-# Только метки — не принимаем как значения
-LABELS = {"фамилия", "имя", "отчество", "почество"}  # почество — OCR-ошибка "отчество"
+# Метки — не принимаем как значения
+LABELS = {"фамилия", "имя", "отчество", "почество"}
+
+# Слова из адресов, "кем выдан", организаций — не ФИО
+BLOCKLIST = {
+    "района", "район", "району", "районы", "районов",
+    "города", "город", "городу", "городов", "городе",
+    "заречного", "заречная", "заречное", "заречный", "заре",
+    "отделом", "отдел", "отдела", "оуфмс", "уфмс",
+    "москвы", "москва", "москве", "москвой",
+    "выдан", "выдана", "место", "рождения", "выдачи",
+    "подразделения", "код", "паспорт", "зарегистрирован",
+    "жительства", "подпись", "семейное", "дети", "пол",
+    "внутренних", "дел", "гольяново", "преображенское",
+    "области", "область", "края", "край", "республики", "республика",
+}
+
+
+def _ok_fio_word(w: str, skip_values: set) -> bool:
+    """Подходит ли слово как часть ФИО (не метка, не блоклист)."""
+    if not w or len(w) < 2 or len(w) > 50 or not w.isalpha():
+        return False
+    low = w.lower()
+    if low in LABELS or low in BLOCKLIST:
+        return False
+    if w.upper() in {s.upper() for s in skip_values}:
+        return False
+    return True
 
 
 def _value_near_label(lines: list, label: str, skip_values: set) -> str:
@@ -29,17 +55,15 @@ def _value_near_label(lines: list, label: str, skip_values: set) -> str:
         words = re.findall(r"[А-ЯЁа-яё\-]+", ln)
         for w in words:
             w = w.strip()
-            if 2 <= len(w) <= 50 and w.isalpha() and w.lower() != label and w.lower() not in LABELS:
-                if w.upper() not in {s.upper() for s in skip_values}:
-                    return w
+            if _ok_fio_word(w, skip_values):
+                return w
         for idx in (i - 1, i + 1, i - 2, i + 2):
             if 0 <= idx < len(lines):
                 words = re.findall(r"[А-ЯЁа-яё\-]+", lines[idx])
                 for w in words:
                     w = w.strip()
-                    if 2 <= len(w) <= 50 and w.isalpha() and w.lower() not in LABELS:
-                        if w.upper() not in {s.upper() for s in skip_values}:
-                            return w
+                    if _ok_fio_word(w, skip_values):
+                        return w
     return ""
 
 
@@ -57,8 +81,11 @@ def _extract_fio_triple(full: str, full_norm: str) -> tuple:
     for txt in (full_norm, full):
         for m in re.finditer(rf"({w})\s+({w})\s+({w})", txt):
             a, b, c = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
-            if c.lower().endswith(("вич", "вна", "ова", "ич")) and a.lower() not in LABELS and b.lower() not in LABELS:
-                return a, b, c
+            if not c.lower().endswith(("вич", "вна", "ова", "ич")):
+                continue
+            if not _ok_fio_word(a, set()) or not _ok_fio_word(b, {a}) or not _ok_fio_word(c, {a, b}):
+                continue
+            return a, b, c
     return "", "", ""
 
 
