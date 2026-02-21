@@ -54,6 +54,8 @@ def parse_passport_data(ocr_text: str) -> dict:
                 continue
             if not c.lower().endswith(("вич", "вна", "ова", "ич")):
                 continue
+            if len(a) == 2 and a[0].upper() == a[1].upper():
+                continue  # ФФ, и т.п. — OCR-шум
             fam, im, otch = a, b, c
             break
         if fam:
@@ -65,15 +67,21 @@ def parse_passport_data(ocr_text: str) -> dict:
         for ln in lines[:30]:
             w = re.sub(r"[^\w\-]", "", ln).strip()
             if 2 <= len(w) <= 50 and w.isalpha():
+                if len(w) == 2 and w[0].upper() == w[1].upper():
+                    continue  # ФФ и т.п.
                 if any(b in w.lower() for b in FIO_BAN) or w.lower() in FIO_BAN:
                     continue
                 if cand and w.upper() == cand[-1].upper():
                     continue
                 cand.append(w)
                 if len(cand) >= 3 and cand[-1].lower().endswith(("вич", "вна", "ова", "ич")):
-                    fam, im, otch = cand[-3], cand[-2], cand[-1]
+                    f, i, o = cand[-3], cand[-2], cand[-1]
+                    if len(f) > 2 or f[0].upper() != f[1].upper():
+                        fam, im, otch = f, i, o
                     break
 
+    if im and len(im) > 3 and im[0].upper() == im[-1].upper():
+        im = im[:-1]  # ФЕДОРФ → ФЕДОР (OCR дублирует букву)
     data["Фамилия"] = fam
     data["Имя"] = im
     data["Отчество"] = otch
@@ -84,8 +92,8 @@ def parse_passport_data(ocr_text: str) -> dict:
             return False
         if num.startswith(("19", "20")):
             return False
-        if s1 in ("77", "87", "84", "78", "19", "20") or s2 in ("77", "87", "84", "78"):
-            return False  # 84,78 — из кода подразделения 780-084
+        if s1 in ("77", "87", "84", "78", "14", "24", "19", "20") or s2 in ("77", "87", "84", "78", "14", "24"):
+            return False  # 84,78 — код подразделения; 14,24 — из дат
         return True
 
     series_val = ""
