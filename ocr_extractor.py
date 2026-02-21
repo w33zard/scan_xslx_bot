@@ -38,20 +38,16 @@ EXCEL_COLUMNS = [
 
 
 def preprocess_image(image_path: str) -> "cv2.Mat":
-    """Предобработка изображения для улучшения OCR"""
+    """Предобработка для OCR — быстро (без slow fastNlMeansDenoising)"""
     img = cv2.imread(image_path)
     if img is None:
         return None
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # Обрезка краёв — убираем рамки/водяные знаки, оставляем центральную часть
     h, w = gray.shape
     margin = min(h, w) // 15
     gray = gray[margin : h - margin, margin : w - margin]
-    # Лёгкое шумоподавление (сильное размывает текст)
-    gray = cv2.fastNlMeansDenoising(gray, None, 5, 7, 21)
     gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
-    # Масштабирование для мелкого текста
     scale = 2
     gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     return gray
@@ -341,36 +337,30 @@ def extract_text_from_image(image_path: str) -> str:
         gray_full = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         gray_crop = _crop_center(gray_full)
         preprocessed = preprocess_image(image_path)
-        variants = [
-            (gray_full, "full"),
-            (gray_crop, "cropped"),
-            (preprocessed, "preprocessed"),
-        ]
-        for rot in [cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE]:
-            g = cv2.cvtColor(cv2.rotate(img, rot), cv2.COLOR_BGR2GRAY)
-            variants.append((g, "rotated"))
+        variants = [(gray_full, "full"), (gray_crop, "cropped")]
+        if preprocessed is not None:
+            variants.append((preprocessed, "preprocessed"))
 
         best_text = ""
         best_score = -1
         for img_use, _ in variants:
             if img_use is None:
                 continue
-            for psm in [11, 6, 4, 3]:
-                for lang in ["rus+eng", "rus"]:
-                    try:
-                        config = f"--psm {psm} -c preserve_interword_spaces=1"
-                        text = pytesseract.image_to_string(img_use, lang=lang, config=config)
-                        if text and text.strip():
-                            txt = text.strip()
-                            parsed = parse_passport_data(txt)
-                            score = sum(1 for k in ("Фамилия", "Имя", "Отчество", "Серия и номер паспорта") if parsed.get(k))
-                            if score > best_score:
-                                best_score = score
-                                best_text = txt
-                            if best_score >= 3:
-                                return _append_vertical_series(image_path, best_text)
-                    except Exception:
-                        continue
+            for psm in [6, 11]:
+                try:
+                    config = f"--psm {psm} -c preserve_interword_spaces=1"
+                    text = pytesseract.image_to_string(img_use, lang="rus+eng", config=config)
+                    if text and text.strip():
+                        txt = text.strip()
+                        parsed = parse_passport_data(txt)
+                        score = sum(1 for k in ("Фамилия", "Имя", "Отчество", "Серия и номер паспорта") if parsed.get(k))
+                        if score > best_score:
+                            best_score = score
+                            best_text = txt
+                        if best_score >= 3:
+                            return _append_vertical_series(image_path, best_text)
+                except Exception:
+                    continue
         if best_text:
             return _append_vertical_series(image_path, best_text)
 

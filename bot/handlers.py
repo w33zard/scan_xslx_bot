@@ -13,10 +13,30 @@ from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from bot.config import ADMIN_IDS, MAX_FILE_MB
+from bot.config import ADMIN_IDS, MAX_FILE_MB, PROCESS_TIMEOUT_SEC
 from bot.utils_files import safe_temp_path, cleanup_path
 
 logger = logging.getLogger(__name__)
+
+
+_executor = None
+
+
+def _get_executor():
+    global _executor
+    if _executor is None:
+        import concurrent.futures
+        _executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+    return _executor
+
+
+async def _run_ocr_sync(func, *args, **kwargs):
+    """Запуск блокирующего OCR в executor — не блокирует event loop"""
+    loop = asyncio.get_event_loop()
+    return await asyncio.wait_for(
+        loop.run_in_executor(_get_executor(), lambda: func(*args, **kwargs)),
+        timeout=PROCESS_TIMEOUT_SEC,
+    )
 
 
 def admin_only(func):
@@ -121,14 +141,14 @@ async def _handle_single_file(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         from ocr_extractor import process_passport_image, process_images_from_folder
         if pdf_pages:
-            results = process_images_from_folder(str(folder))
+            results = await _run_ocr_sync(process_images_from_folder, str(folder))
             row = results[0] if results else {}
             try:
                 shutil.rmtree(folder, ignore_errors=True)
             except Exception:
                 pass
         else:
-            row = process_passport_image(path, index=1)
+            row = await _run_ocr_sync(lambda: process_passport_image(path, 1))
         summary = "\n".join(f"{k}: {v}" for k, v in row.items() if v and k != "№ п/п")
 
         await update.message.reply_text(f"📋 Результат:\n\n{summary[:3000]}")
@@ -138,7 +158,7 @@ async def _handle_single_file(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_document(document=bio, filename="passport_result.json")
 
     except asyncio.TimeoutError:
-        await update.message.reply_text("⏱ Превышено время обработки. Попробуйте меньшее изображение.")
+        await update.message.reply_text("⏱ Превышено время обработки (90 сек). Попробуйте меньшее изображение.")
     except Exception as e:
         logger.exception("Document handling error")
         await update.message.reply_text(f"❌ Ошибка: {type(e).__name__}")
@@ -172,7 +192,7 @@ async def _handle_zip(update: Update, context: ContextTypes.DEFAULT_TYPE, doc) -
 
         from excel_export import normalize_results
         from ocr_extractor import process_images_from_folder
-        results = process_images_from_folder(str(extract_dir))
+        results = await _run_ocr_sync(process_images_from_folder, str(extract_dir))
         results = normalize_results(results)
 
         if not results:
@@ -196,6 +216,8 @@ async def _handle_zip(update: Update, context: ContextTypes.DEFAULT_TYPE, doc) -
 
     except zipfile.BadZipFile:
         await update.message.reply_text("❌ Повреждённый ZIP-архив.")
+    except asyncio.TimeoutError:
+        await update.message.reply_text("⏱ Превышено время. Меньше файлов в архиве или уменьшите размер.")
     except Exception as e:
         logger.exception("ZIP handling error")
         await update.message.reply_text(f"❌ Ошибка: {type(e).__name__}")
@@ -325,9 +347,16 @@ async def process_ready(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 shutil.copy(p, dst)
         from excel_export import normalize_results
         from ocr_extractor import process_images_from_folder
-        results = process_images_from_folder(folder)
+        results = await _run_ocr_sync(process_images_from_folder, folder)
         results = normalize_results(results)
         shutil.rmtree(folder, ignore_errors=True)
+    except asyncio.TimeoutError:
+        results = []
+        await update.message.reply_text("⏱ Превышено время обработки. Меньше фото или подождите.")
+        for p in photos:
+            cleanup_path(p)
+        context.user_data["pending_photos"] = []
+        return
     except Exception as e:
         logger.exception("process_ready error")
         results = []
