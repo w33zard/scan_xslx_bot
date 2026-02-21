@@ -400,9 +400,24 @@ def process_passport_image(image_path: str, index: int = 1) -> dict:
     """
     Обработать одно изображение паспорта и вернуть данные для Excel.
     Серия/номер: приоритет у вертикальной полосы справа (там печатают в паспорте).
+    При пустом OCR — fallback на MRZ (Machine Readable Zone внизу страницы).
     """
     ocr_text = extract_text_from_image(image_path)
     data = parse_passport_data(ocr_text)
+
+    mrz_data = None
+    try:
+        from mrz_fallback import extract_mrz_from_text, extract_mrz_from_image
+        mrz_data = extract_mrz_from_text(ocr_text)
+        if not mrz_data:
+            mrz_data = extract_mrz_from_image(image_path)
+    except Exception:
+        pass
+    if mrz_data:
+        for k, v in mrz_data.items():
+            if v and (not data.get(k) or k in ("Фамилия", "Имя", "Отчество", "Серия и номер паспорта", "Дата рождения")):
+                data[k] = v
+
     vert_series = _extract_series_from_vertical_red(image_path)
     if vert_series:
         data["Серия и номер паспорта"] = vert_series
@@ -452,6 +467,23 @@ def _process_one_person(parent: Path, images: list[Path], person_idx: int) -> di
         data = parse_passport_data(combined_ocr)
     else:
         data = {col: "" for col in EXCEL_COLUMNS[1:]}
+
+    mrz_data = None
+    try:
+        from mrz_fallback import extract_mrz_from_text, extract_mrz_from_image
+        mrz_data = extract_mrz_from_text(combined_ocr)
+        if not mrz_data:
+            for img_path in images:
+                mrz_data = extract_mrz_from_image(str(img_path))
+                if mrz_data:
+                    break
+    except Exception:
+        pass
+    if mrz_data:
+        for k, v in mrz_data.items():
+            if v and (not data.get(k) or k in ("Фамилия", "Имя", "Отчество", "Серия и номер паспорта", "Дата рождения")):
+                data[k] = v
+
     for img_path in images:
         s = _extract_series_from_vertical_red(str(img_path))
         if s:
